@@ -499,21 +499,37 @@ function askWho(next) {
 function renderHome() {
   const w = weddingDate(), t0 = today();
   const editBtn = '<button class="edit-dl" data-action="edit-deadline">✎ Edit deadline</button>';
+  const BITS = '<div class="bits"><b></b><b></b><b></b><b></b><b></b></div>';
+  /* Banner countdown: satu bentuk untuk semua keadaan */
+  const banner = (eyebrow, num, chip, bar, soon) => `<div class="card count cdA${soon ? ' pulse' : ''}">${BITS}
+    <div class="hd"><div class="ic">🥳</div><div><div class="eyebrow">${eyebrow}</div><div class="tag">Erik &amp; Oni</div></div></div>
+    ${num ? `<div class="num">${num}</div>` : ''}${chip ? `<div class="chip">${chip}</div>` : ''}${bar || ''}${editBtn}</div>`;
   let count;
   if (!w) {
-    count = `<div class="card count"><div class="big">Deadline not set</div>
-      <div class="sub">Pilih tanggal pernikahan untuk mulai countdown</div>${editBtn}</div>`;
+    count = banner('Countdown to wedding day', '', 'Deadline belum diatur · pilih tanggal pernikahan', '', false);
   } else if (w < t0) {
-    count = `<div class="card count"><div class="big">Selamat! 🎉</div><div class="sub">${esc(fmtDate(S.meta.weddingDate))} sudah lewat</div>${editBtn}</div>`;
+    count = banner('Selamat! 🎉', '', '📅 ' + esc(fmtDate(S.meta.weddingDate)) + ' sudah lewat', '', false);
   } else if (+w === +t0) {
-    count = `<div class="card count"><div class="big">Hari ini hari H 💍</div><div class="sub">${esc(fmtDate(S.meta.weddingDate))}</div>${editBtn}</div>`;
+    count = banner('Hari ini hari H 💍', '', '📅 ' + esc(fmtDate(S.meta.weddingDate)), '', true);
   } else {
-    const d = diffMD(t0, w), p = [];
-    if (d.m) p.push(d.m + ' bulan');
-    if (d.days || !d.m) p.push(d.days + ' hari');
-    count = `<div class="card count"><div class="small" style="opacity:.92">Countdown to wedding day</div>
-      <div class="big">${p.join(' ')}</div>
-      <div class="sub">Deadline: ${esc(fmtDate(S.meta.weddingDate))}<br>total ${d.total} hari lagi</div>${editBtn}</div>`;
+    const d = diffMD(t0, w), soon = d.total <= 30;
+    /* Awal perjalanan: tanggal pertama ada data (atau hari ini). Ini hanya tafsiran aplikasi untuk bar kemajuan. */
+    const stamps = [...S.tasks, ...S.guests, ...S.budget].map(o => o.updatedAt).filter(x => x > 1e11);
+    let start = S.meta.startDate ? parseISO(S.meta.startDate) : (stamps.length ? startOfDay(new Date(Math.min(...stamps))) : t0);
+    if (!start || start > t0) start = t0;
+    const span = Math.max(1, Math.round((w - start) / DAY));
+    const gone = Math.min(100, Math.max(0, Math.round((Math.round((t0 - start) / DAY)) / span * 100)));
+    const bar = `<div class="prog"><i style="width:${gone}%"></i></div><div class="plab">Perjalanan menuju hari H · ${gone}%</div>`;
+    let num;
+    if (soon) num = `<span class="n">${d.total}</span><span class="u">hari lagi</span>`;
+    else {
+      num = '';
+      if (d.m) num += `<span class="n">${d.m}</span><span class="u">bulan</span>`;
+      if (d.days || !d.m) num += `<span class="n">${d.days}</span><span class="u">hari</span>`;
+    }
+    const date = esc(fmtDate(S.meta.weddingDate));
+    count = banner(soon ? 'Tinggal sebentar lagi! 🎊' : 'Countdown to wedding day', num,
+      soon ? `📅 ${date}` : `📅 ${date} · ${d.total} hari lagi`, bar, soon);
   }
   const all = live.tasks(), done = all.filter(t => t.done).length;
   const pct = all.length ? Math.round(done / all.length * 100) : 0;
