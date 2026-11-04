@@ -464,9 +464,9 @@ function render() {
   if (!booted) return;
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
   const keep = {};
-  view.querySelectorAll('[data-keep]').forEach(el => { keep[el.id] = { v: el.value, f: document.activeElement === el }; });
+  view.querySelectorAll('[data-keep]').forEach(el => { keep[el.id] = { v: el.value, f: document.activeElement === el, s: el.selectionStart, e: el.selectionEnd }; });
   view.innerHTML = ({ home: renderHome, tasks: renderTasks, guests: renderGuests, budget: renderBudget, settings: renderSettings }[tab])();
-  view.querySelectorAll('[data-keep]').forEach(el => { const k = keep[el.id]; if (k) { el.value = k.v; if (k.f) el.focus(); } });
+  view.querySelectorAll('[data-keep]').forEach(el => { const k = keep[el.id]; if (k) { el.value = k.v; if (k.f) { el.focus(); try { el.setSelectionRange(k.s, k.e); } catch {} } } });
 }
 $('#tabs').addEventListener('click', e => {
   const b = e.target.closest('button[data-tab]'); if (!b) return;
@@ -798,14 +798,14 @@ function renderGuests() {
       <button class="soft" data-action="manage-groups">Manage groups</button></div></div>
     ${perGroup}
     <input id="g-search" data-keep placeholder="Search name…" value="${esc(ui.guestSearch)}" style="margin-bottom:10px">
-    ${list.length ? `<div class="card" style="padding:4px 14px">${list.map(g => `<div class="item">
+    <div id="g-list">${list.length ? `<div class="card" style="padding:4px 14px">${list.map(g => `<div class="item">
       <div class="grow" data-action="open-guest" data-id="${g.id}" style="cursor:pointer"><b>${esc(g.name)}</b>
         ${pax(g) > 1 ? `<span class="pill">${pax(g)} orang</span>` : ''}
         ${g.phone ? `<span class="muted small">${esc(g.phone)}</span>` : ''}
         <div>${(g.groups || []).map(id => `<span class="pill">${esc(groupName(id))}</span>`).join('')}</div>
         ${g.note ? `<div class="muted small">${esc(g.note)}</div>` : ''}
         <div class="rsvp">${RSVP.map(([v, l, c]) => `<button class="${g.rsvp === v ? 'on ' + c : ''}" data-action="rsvp" data-id="${g.id}" data-v="${v}">${l}</button>`).join('')}</div>
-      </div></div>`).join('')}</div>` : '<div class="empty">Belum ada tamu di daftar ini.</div>'}`;
+      </div></div>`).join('')}</div>` : '<div class="empty">Belum ada tamu di daftar ini.</div>'}</div>`;
 }
 function guestModal(id) {
   const ex = S.guests.find(g => g.id === id);
@@ -1102,7 +1102,13 @@ function downloadCSV(name, rows) {
 /* ============================================================
    12. Event handler
    ============================================================ */
-view.addEventListener('input', e => { if (e.target.id === 'g-search') { ui.guestSearch = e.target.value; render(); } });
+view.addEventListener('input', e => {
+  if (e.target.id !== 'g-search') return;
+  ui.guestSearch = e.target.value;
+  const t = document.createElement('div'); t.innerHTML = renderGuests();
+  const fresh = t.querySelector('#g-list'), cur = view.querySelector('#g-list');
+  if (fresh && cur) cur.replaceWith(fresh); else render();
+});
 view.addEventListener('change', async e => {
   const t = e.target;
   if (t.id === 't-sort') { ui.taskSort = t.value; render(); }
