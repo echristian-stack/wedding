@@ -1,4 +1,4 @@
-const VERSION = 'wedding-v2';
+const VERSION = 'wedding-v3';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'store.js', 'guide.js', 'manifest.json',
   'icons/icon-192.png', 'icons/icon-512.png'];
 

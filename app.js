@@ -148,8 +148,7 @@ function celebrate(x, y) {
   document.body.appendChild(m); setTimeout(() => m.remove(), 2300);
   if (matchMedia('(prefers-reduced-motion: reduce)').matches || fx === 'light') return;
   if (!cvs) { cvs = document.createElement('canvas'); cvs.className = 'confetti'; document.body.appendChild(cvs); ctx = cvs.getContext('2d'); }
-  const dpr = Math.min(devicePixelRatio || 1, 2);
-  if (cvs.width !== innerWidth * dpr) { cvs.width = innerWidth * dpr; cvs.height = innerHeight * dpr; }
+  fitCanvas();
   const ox = x ?? innerWidth / 2, oy = y ?? innerHeight * .62;
   const col = ['#ff6b9d', '#ffc94d', '#5ad1b0', '#6aa7ff', '#b58cff', '#ff8a5c', '#ffffff'];
   for (let i = 0; i < 110; i++) {
@@ -160,9 +159,17 @@ function celebrate(x, y) {
   }
   if (!raf) raf = requestAnimationFrame(tick);
 }
-function tick() {
+/* Ukuran kanvas mengikuti layar, termasuk saat keyboard HP muncul/hilang (tinggi layar berubah). */
+function fitCanvas() {
   const dpr = Math.min(devicePixelRatio || 1, 2);
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, innerWidth, innerHeight);
+  const w = Math.round(innerWidth * dpr), h = Math.round(innerHeight * dpr);
+  if (cvs.width !== w || cvs.height !== h) { cvs.width = w; cvs.height = h; }
+}
+function clearCanvas() { ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, cvs.width, cvs.height); }
+function tick() {
+  fitCanvas();
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  clearCanvas(); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   parts = parts.filter(p => p.life < p.max);
   for (const p of parts) {
     p.vx *= .99; p.vy += p.g; p.x += p.vx; p.y += p.vy; p.r += p.vr; p.life++;
@@ -179,7 +186,7 @@ function tick() {
     ctx.restore();
   }
   ctx.globalAlpha = 1;
-  raf = parts.length ? requestAnimationFrame(tick) : (ctx.clearRect(0, 0, innerWidth, innerHeight), 0);
+  raf = parts.length ? requestAnimationFrame(tick) : (clearCanvas(), 0);
 }
 
 /* ============================================================
