@@ -1,0 +1,9 @@
+name = "wedding-push"
+main = "worker.js"
+compatibility_date = "2024-11-01"
+
+# Secrets dipasang lewat perintah, bukan ditulis di file ini:
+#   npx wrangler secret put SHARED_SECRET
+#   npx wrangler secret put SA_CLIENT_EMAIL
+#   npx wrangler secret put SA_PRIVATE_KEY
+#   npx wrangler secret put PROJECT_ID
