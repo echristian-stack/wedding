@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2f7a68">
+<meta name="description" content="Wedding planner Erik & Oni">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<title>Erik &amp; Oni</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">Erik &amp; Oni</div>
+  <div id="status" class="status" title="Status sinkronisasi">Local</div>
+</header>
+
+<main id="view" aria-live="polite"></main>
+
+<nav class="tabs" id="tabs">
+  <button data-tab="home"><span>🏠</span>Home</button>
+  <button data-tab="tasks"><span>✅</span>Tasks</button>
+  <button data-tab="guests"><span>👥</span>Guests</button>
+  <button data-tab="budget"><span>💰</span>Budget</button>
+  <button data-tab="settings"><span>⚙️</span>Settings</button>
+</nav>
+
+<div id="modal" class="modal" aria-hidden="true">
+  <div class="sheet" id="modal-body" role="dialog" aria-modal="true"></div>
+</div>
+
+<div id="lightbox" class="lightbox" hidden>
+  <img id="lb-img" alt="">
+  <div class="lb-bar">
+    <button id="lb-del" class="danger" hidden>Delete photo</button>
+    <button id="lb-close" class="primary">Close</button>
+  </div>
+</div>
+
+<div id="toasts" class="toasts"></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

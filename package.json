@@ -1,0 +1,20 @@
+{
+  "name": "wedding-erik-oni",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Perencana pernikahan Erik & Oni — PWA + Capacitor (Android)",
+  "scripts": {
+    "sync": "cap sync android",
+    "open:android": "cap open android"
+  },
+  "dependencies": {
+    "@capacitor/android": "6.2.0",
+    "@capacitor/app": "6.0.2",
+    "@capacitor/core": "6.2.0",
+    "@capacitor/local-notifications": "6.1.2",
+    "@capacitor/push-notifications": "6.0.4"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "6.2.0"
+  }
+}
