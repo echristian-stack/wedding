@@ -1,0 +1,154 @@
+name: Build APK
+
+# Jalankan manual dari tab Actions, atau otomatis saat ada perubahan di main.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Tentukan alamat hosting
+        id: url
+        run: |
+          # Alamat GitHub Pages repo ini, mis. https://erik.github.io/wedding/
+          OWNER="${GITHUB_REPOSITORY%%/*}"
+          REPO="${GITHUB_REPOSITORY##*/}"
+          URL="${APP_URL:-https://${OWNER,,}.github.io/${REPO}/}"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "Aplikasi akan dimuat dari: $URL"
+        env:
+          APP_URL: ${{ vars.APP_URL }}
+
+      - name: Siapkan isi web (www/)
+        run: |
+          mkdir -p www
+          cp index.html style.css app.js store.js guide.js sw.js manifest.json www/
+          cp -r icons www/
+
+      - name: Tulis capacitor.config.json
+        run: |
+          cat > capacitor.config.json <<JSON
+          {
+            "appId": "com.erikoni.wedding",
+            "appName": "Erik & Oni",
+            "webDir": "www",
+            "server": { "url": "${{ steps.url.outputs.url }}", "androidScheme": "https" },
+            "plugins": {
+              "LocalNotifications": { "smallIcon": "ic_stat_icon", "iconColor": "#2f7a68" },
+              "PushNotifications": { "presentationOptions": ["alert", "sound"] }
+            }
+          }
+          JSON
+          cat capacitor.config.json
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Tambah platform Android
+        run: npx cap add android && npx cap sync android
+
+      - name: Pasang google-services.json (untuk push)
+        run: |
+          if [ -f android-assets/google-services.json ]; then
+            cp android-assets/google-services.json android/app/google-services.json
+            # daftarkan plugin Google Services supaya FCM aktif
+            sed -i 's|classpath .com.android.tools.build:gradle.*|&\n        classpath "com.google.gms:google-services:4.4.2"|' android/build.gradle
+            echo 'apply plugin: "com.google.gms.google-services"' >> android/app/build.gradle
+            echo "google-services.json terpasang — push aktif."
+          else
+            echo "::warning::android-assets/google-services.json tidak ada. APK tetap jadi, tetapi notifikasi push dari pasangan tidak akan masuk."
+          fi
+
+      - name: Izin alarm tepat waktu (pengingat saat aplikasi tertutup)
+        run: |
+          M=android/app/src/main/AndroidManifest.xml
+          sed -i 's|<application|<uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>\n\n    <application|' $M
+          grep -c uses-permission $M
+
+      - name: Siapkan keystore
+        id: ks
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KS_B64" ] && [ -n "$KS_PASS" ]; then
+            echo "$KS_B64" | base64 -d > android/app/sign.jks
+            echo "pass=$KS_PASS" >> "$GITHUB_OUTPUT"
+            echo "mode=tetap" >> "$GITHUB_OUTPUT"
+          else
+            # Tanpa secret: buat kunci sementara. APK tetap bisa dipasang,
+            # tetapi APK berikutnya tidak bisa menimpa yang lama (harus uninstall dulu).
+            PASS="wedding$(date +%s)"
+            keytool -genkeypair -v -keystore android/app/sign.jks -alias wedding \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "$PASS" -keypass "$PASS" \
+              -dname "CN=Erik dan Oni, OU=Wedding, O=Wedding, L=-, S=-, C=ID"
+            echo "pass=$PASS" >> "$GITHUB_OUTPUT"
+            echo "mode=sementara" >> "$GITHUB_OUTPUT"
+            echo "::warning::Memakai kunci sementara. Tambahkan secret ANDROID_KEYSTORE_B64 dan ANDROID_KEYSTORE_PASSWORD agar APK berikutnya bisa menimpa yang lama."
+          fi
+
+      - name: Build APK
+        working-directory: android
+        env:
+          P: ${{ steps.ks.outputs.pass }}
+        run: |
+          cat >> app/build.gradle <<GRADLE
+
+          android {
+              signingConfigs {
+                  release {
+                      storeFile file("sign.jks")
+                      storePassword System.getenv("P")
+                      keyAlias "wedding"
+                      keyPassword System.getenv("P")
+                  }
+              }
+              buildTypes { release { signingConfig signingConfigs.release } }
+          }
+          GRADLE
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+          find . -name "*.apk" -print
+
+      - name: Beri nama APK
+        run: |
+          mkdir -p out
+          cp android/app/build/outputs/apk/release/app-release.apk "out/wedding-erik-oni.apk"
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wedding-apk
+          path: out/wedding-erik-oni.apk
+          retention-days: 90
+
+      - name: Ringkasan
+        run: |
+          {
+            echo "## APK siap ✅"
+            echo ""
+            echo "- Aplikasi dimuat dari: ${{ steps.url.outputs.url }}"
+            echo "- Kunci tanda tangan: **${{ steps.ks.outputs.mode }}**"
+            echo "- Unduh di bagian **Artifacts** pada halaman ini, lalu pasang di HP Erik dan Oni."
+            echo ""
+            echo "Update tampilan atau fitur cukup diunggah ke hosting — APK tidak perlu dibuat ulang."
+          } >> $GITHUB_STEP_SUMMARY
