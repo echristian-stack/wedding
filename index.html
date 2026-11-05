@@ -9,12 +9,18 @@
 <link rel="icon" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/icon-192.png">
 <title>Erik &amp; Oni</title>
+<script>
+try{var t=localStorage.getItem('wedding.theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}
+</script>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <header class="top">
   <div class="brand">Erik &amp; Oni</div>
-  <div id="status" class="status" title="Status sinkronisasi">Local</div>
+  <div class="top-r">
+    <button id="theme-btn" class="theme-btn" data-action="toggle-theme" aria-label="Ganti tema">🌙</button>
+    <div id="status" class="status" title="Status sinkronisasi">Local</div>
+  </div>
 </header>
 
 <main id="view" aria-live="polite"></main>

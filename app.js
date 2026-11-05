@@ -555,6 +555,26 @@ function askWho(next) {
 }
 
 /* ---------- Home ---------- */
+/* Tema terang/gelap: ikut sistem sampai tombol di Home ditekan; pilihan disimpan per HP */
+function themeNow() {
+  const t = document.documentElement.getAttribute('data-theme');
+  return t || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+}
+function paintThemeBtn() {
+  const dk = themeNow() === 'dark', b = document.getElementById('theme-btn');
+  if (b) { b.textContent = dk ? '☀️' : '🌙'; b.setAttribute('aria-label', dk ? 'Ganti ke mode terang' : 'Ganti ke mode gelap'); }
+}
+function toggleTheme() {
+  const next = themeNow() === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  try { localStorage.setItem('wedding.theme', next); } catch (e) {}
+  const m = document.querySelector('meta[name="theme-color"]');
+  if (m) m.setAttribute('content', next === 'dark' ? '#0e1815' : '#2f7a68');
+  paintThemeBtn();
+}
+paintThemeBtn();
+document.getElementById('theme-btn')?.addEventListener('click', toggleTheme);
+
 function renderHome() {
   const w = weddingDate(), t0 = today();
   const editBtn = '<button class="edit-dl" data-action="edit-deadline">✎ Edit deadline</button>';
