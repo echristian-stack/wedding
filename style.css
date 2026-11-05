@@ -294,3 +294,53 @@ h3.grp.none{color:var(--amber)}
 
 @media (prefers-reduced-motion:reduce){*{animation-duration:.01ms !important;transition-duration:.01ms !important}}
 .count .chip+.edit-dl{margin-top:12px}
+
+/* ===== Label, grup, dan kategori berwarna ===== */
+.tag{display:inline-block;font-size:12px;font-weight:600;padding:2px 9px;border-radius:99px;margin:3px 5px 0 0;
+  background:var(--cbg);border:1px solid var(--cln);color:var(--cd)}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--c);flex:none;box-shadow:0 0 6px var(--cbg);vertical-align:0}
+.dot.big{width:22px;height:22px}
+.chip .dot{margin-right:7px;vertical-align:-1px}
+.chip.on .dot{box-shadow:0 0 0 2px rgba(255,255,255,.75)}
+.sub-h{font-size:13px;color:var(--muted);margin-top:12px}
+.sels{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;align-items:center}
+.sels label.sel{display:inline-block;position:relative;margin:0;font-size:inherit;color:inherit}
+.sel input{position:absolute;opacity:0;width:0;height:0;margin:0;pointer-events:none}
+.sel span{display:inline-flex;align-items:center;gap:7px;padding:7px 12px;border-radius:99px;border:1px solid var(--cln);
+  color:var(--ink);font-size:14px;background:rgba(255,255,255,.18);transition:background .15s,border-color .15s}
+.sel input:checked+span{background:var(--cbg);border-color:var(--c);color:var(--cd);font-weight:600;box-shadow:0 0 0 1px var(--c) inset}
+.sel input:focus-visible+span{outline:2px solid var(--c);outline-offset:2px}
+.swatches{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px}
+.sw{width:30px;height:30px;border-radius:50%;background:var(--c);border:2px solid rgba(255,255,255,.85);padding:0;box-shadow:0 1px 4px rgba(0,0,0,.2)}
+.sw.on{box-shadow:0 0 0 2px var(--glass-strong),0 0 0 4px var(--c)}
+.mrow{display:flex;gap:8px;align-items:center;margin-top:8px}
+.mrow input{margin:0}
+.dotbtn{flex:none;width:40px;height:40px;border-radius:12px;background:var(--cbg);border:1px solid var(--cln);display:grid;place-items:center;padding:0}
+.inline-new{margin-top:10px;padding:12px;border-radius:14px;background:rgba(255,255,255,.18);border:1px dashed var(--glass-line)}
+.inline-new .row{margin-top:10px}
+button.sm{padding:6px 12px;font-size:13px}
+@media (prefers-color-scheme:dark){
+ .tag{color:var(--cl)}
+ .sel input:checked+span{color:var(--cl)}
+ .sel span{background:rgba(255,255,255,.05)}
+ .inline-new{background:rgba(255,255,255,.05)}
+}
+
+/* ===== Lebih tembus pandang (v2) ===== */
+:root{--glass:rgba(255,255,255,.12);--glass-strong:rgba(255,255,255,.28);--glass-line:rgba(255,255,255,.55);
+  --blur:blur(18px) saturate(200%) brightness(1.05)}
+@media (prefers-color-scheme:dark){:root{--glass:rgba(40,70,62,.10);--glass-strong:rgba(44,78,69,.30);--glass-line:rgba(160,255,225,.18)}}
+.count{background:rgba(255,255,255,.14)}
+.count .ic,.count .chip,.edit-dl{background:rgba(255,255,255,.28)}
+.count .prog{background:rgba(255,255,255,.3)}
+.bar{background:rgba(255,255,255,.22)}
+input,select,textarea{background:rgba(255,255,255,.12)}
+.sub{background:rgba(255,255,255,.08)}
+@media (prefers-color-scheme:dark){.count{background:rgba(255,255,255,.05)}}
+
+/* Foto berdua di Home */
+.couple{position:relative;margin:0 0 10px;border-radius:var(--r);overflow:hidden;aspect-ratio:880/520;background:#f1e4d4;
+  box-shadow:var(--shadow);border:1px solid var(--glass-line)}
+.couple img{width:100%;height:100%;object-fit:cover;object-position:center 35%;display:block}
+.couple .cap{position:absolute;left:0;right:0;bottom:0;padding:34px 16px 12px;color:#fff;font-weight:600;font-size:17px;
+  background:linear-gradient(transparent,rgba(0,0,0,.55));text-shadow:0 1px 6px rgba(0,0,0,.4)}

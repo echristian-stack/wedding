@@ -1,6 +1,6 @@
-const VERSION = 'wedding-v3';
+const VERSION = 'wedding-v4';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'store.js', 'guide.js', 'manifest.json',
-  'icons/icon-192.png', 'icons/icon-512.png'];
+  'icons/icon-192.png', 'icons/icon-512.png', 'icons/couple.jpg'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));

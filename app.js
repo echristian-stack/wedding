@@ -50,11 +50,11 @@ const saveCfg = c => { try { localStorage.setItem(CFG_KEY, JSON.stringify(c)); }
 let cfg = Object.assign({ mode: 'local', room: '', firebaseConfig: null, me: '', pushUrl: '', pushSecret: '' }, loadCfg());
 
 const DEFAULT_GROUPS = [
-  { id: 'g-zoom', name: 'Grup Zoom' },
-  { id: 'g-balai', name: 'Balai Kerajaan' },
-  { id: 'g-balai-makan', name: 'Balai Kerajaan + Makan Bersama' }
+  { id: 'g-zoom', name: 'Grup Zoom', color: 'blue' },
+  { id: 'g-balai', name: 'Balai Kerajaan', color: 'green' },
+  { id: 'g-balai-makan', name: 'Balai Kerajaan + Makan Bersama', color: 'orange' }
 ];
-const META0 = { id: 'settings', weddingDate: '', budgetTarget: 0, groups: DEFAULT_GROUPS, autoRemind: true };
+const META0 = { id: 'settings', weddingDate: '', budgetTarget: 0, groups: DEFAULT_GROUPS, labels: [], categories: [], autoRemind: true };
 const S = { tasks: [], guests: [], budget: [], photos: {}, meta: { ...META0 } };
 const live = {                       // hanya yang belum dihapus
   tasks: () => S.tasks.filter(t => !t.deletedAt),
@@ -64,7 +64,66 @@ const live = {                       // hanya yang belum dihapus
 
 let store = null;
 let tab = sessionStorage.getItem('tab') || 'home';
-const ui = { taskSort: 'due', taskFilter: 'open', guestGroup: 'all', guestSearch: '' };
+const ui = { taskSort: 'due', taskFilter: 'open', guestGroup: 'all', guestLabel: 'all', guestSearch: '' };
+
+/* ---------- Warna untuk grup, label, dan kategori ---------- */
+const PALETTE = [
+  { k: 'green', n: 'Hijau', c: '#2fa37f', d: '#1b6b52', l: '#7fe0bd' },
+  { k: 'blue', n: 'Biru', c: '#3b82f6', d: '#1e4fb0', l: '#9cc2ff' },
+  { k: 'purple', n: 'Ungu', c: '#8b5cf6', d: '#5a32b8', l: '#c4b0ff' },
+  { k: 'pink', n: 'Pink', c: '#ec4899', d: '#a3195f', l: '#ffa6d1' },
+  { k: 'red', n: 'Merah', c: '#ef4444', d: '#a31b1b', l: '#ffa3a3' },
+  { k: 'orange', n: 'Oranye', c: '#f97316', d: '#a64a05', l: '#ffc08a' },
+  { k: 'yellow', n: 'Kuning', c: '#eab308', d: '#7a5c00', l: '#ffe27a' },
+  { k: 'teal', n: 'Tosca', c: '#14b8a6', d: '#0b6b61', l: '#80ece0' },
+  { k: 'brown', n: 'Cokelat', c: '#a8734a', d: '#6b4426', l: '#e3b98f' },
+  { k: 'gray', n: 'Abu-abu', c: '#64748b', d: '#3f4a5a', l: '#c0cad8' },
+  { k: 'indigo', n: 'Nila', c: '#6366f1', d: '#3a3dad', l: '#b3b5ff' },
+  { k: 'lime', n: 'Lime', c: '#84cc16', d: '#4a7a05', l: '#cdee86' }
+];
+const PAL = Object.fromEntries(PALETTE.map(x => [x.k, x]));
+const FIXED_COLOR = { 'g-zoom': 'blue', 'g-balai': 'green', 'g-balai-makan': 'orange' };
+const colorVars = k => { const x = PAL[k] || PAL.gray; return `--c:${x.c};--cd:${x.d};--cl:${x.l};--cbg:${x.c}2e;--cln:${x.c}8c`; };
+/* Yang belum punya warna diberi warna yang belum dipakai di daftar itu. Hasilnya selalu sama untuk data yang sama. */
+function fillColors(list) {
+  const used = new Set(list.map(x => x.color).filter(k => PAL[k]));
+  return list.map(x => {
+    if (PAL[x.color]) return x;
+    let k = FIXED_COLOR[x.id];
+    if (!k || used.has(k)) {
+      const start = hash32(String(x.name || x.id).toLowerCase()) % PALETTE.length;
+      k = PALETTE[start].k;
+      for (let i = 1; i <= PALETTE.length && used.has(k); i++) k = PALETTE[(start + i) % PALETTE.length].k;
+    }
+    used.add(k); return { ...x, color: k };
+  });
+}
+const plain = list => list.map(({ virtual, ...x }) => x);
+const groupsC = () => fillColors(S.meta.groups || []);
+const labelsC = () => fillColors(S.meta.labels || []);
+const groupColor = id => (groupsC().find(g => g.id === id) || {}).color || 'gray';
+/* Kategori budget disimpan sebagai teks di tiap item. Yang dipakai item tapi belum ada di daftar muncul otomatis (virtual). */
+function catsC() {
+  const stored = S.meta.categories || [], seen = new Set(stored.map(c => c.name.trim().toLowerCase())), extra = [];
+  for (const i of live.budget()) {
+    const n = (i.category || '').trim(), k = n.toLowerCase();
+    if (n && !seen.has(k)) { seen.add(k); extra.push({ id: 'v:' + k, name: n, virtual: true }); }
+  }
+  extra.sort((a, b) => a.name.localeCompare(b.name, 'id'));
+  return fillColors([...stored, ...extra]);
+}
+const catMap = () => new Map(catsC().map(c => [c.name.trim().toLowerCase(), c]));
+const catColorOf = name => (catMap().get((name || '').trim().toLowerCase()) || {}).color || 'gray';
+const firstFree = list => (PALETTE.find(x => !list.some(y => y.color === x.k)) || PALETTE[0]).k;
+const tagHtml = (color, name, pre = '') => `<span class="tag" style="${colorVars(color)}">${pre}${esc(name)}</span>`;
+const selChip = (cls, id, name, color, on, pre = '') =>
+  `<label class="sel" style="${colorVars(color)}"><input type="checkbox" class="${cls}" value="${esc(id)}" ${on ? 'checked' : ''}><span><i class="dot"></i>${pre}${esc(name)}</span></label>`;
+const swatches = (sel, extra = '') => `<div class="swatches">${PALETTE.map(x =>
+  `<button type="button" class="sw ${sel === x.k ? 'on' : ''}" data-m="pick" data-k="${x.k}" ${extra} style="--c:${x.c}" aria-label="${x.n}" title="${x.n}"></button>`).join('')}</div>`;
+const inlineNew = (color, ph) => `<div class="inline-new"><input id="in-name" placeholder="${ph}" autocomplete="off">
+  <div class="sub-h">Warna</div>${swatches(color)}
+  <div class="row"><button class="ghost grow" data-m="in-cancel">Cancel</button><button class="primary grow" data-m="in-add">Add</button></div></div>`;
+
 let swReg = null, booted = false;
 
 // mode efek (Full / Light) untuk HP yang terasa berat
@@ -537,7 +596,8 @@ function renderHome() {
     <div class="bar"><i style="width:${pct}%"></i></div></div>`;
   const soon = all.filter(t => !t.done && t.due && parseISO(t.due) <= addDays(t0, 7))
     .sort((a, b) => a.due.localeCompare(b.due)).slice(0, 8);
-  return count + progress + (soon.length ? '<h2>Needs attention</h2>' + soon.map(taskCard).join('') : '') + renderGuide();
+  const couple = '<div class="couple"><img src="icons/couple.jpg" alt="Erik &amp; Oni"><div class="cap">Erik &amp; Oni' + (w ? ' · ' + esc(fmtDate(S.meta.weddingDate)) : '') + ' 🥳</div></div>';
+  return couple + count + progress + (soon.length ? '<h2>Needs attention</h2>' + soon.map(taskCard).join('') : '') + renderGuide();
 }
 
 function renderGuide() {
@@ -787,108 +847,195 @@ function diffDoc(orig, now) {
 /* ---------- Guests ---------- */
 const RSVP = [['yes', 'Hadir', 'yes'], ['no', 'Tidak', 'no'], ['invited', 'Diundang', 'inv']];
 function renderGuests() {
-  const groups = S.meta.groups, gf = ui.guestGroup, q = ui.guestSearch.toLowerCase();
+  const groups = groupsC(), labels = labelsC(), gf = ui.guestGroup, lf = ui.guestLabel, q = ui.guestSearch.toLowerCase();
   const all = live.guests();
   const pax = g => Math.max(1, Number(g.pax) || 1);
-  let list = all.slice().sort((a, b) => a.name.localeCompare(b.name, 'id'));
-  if (gf !== 'all') list = list.filter(g => (g.groups || []).includes(gf));
+  const inG = (g, id) => (g.groups || []).includes(id), inL = (g, id) => (g.labels || []).includes(id);
+  const match = g => (gf === 'all' || inG(g, gf)) && (lf === 'all' || inL(g, lf));
+  let list = all.filter(match).sort((a, b) => a.name.localeCompare(b.name, 'id'));
   if (q) list = list.filter(g => g.name.toLowerCase().includes(q));
-  const lastSel = JSON.parse(sessionStorage.getItem('lastGroups') || '[]');
-  const chips = `<button class="chip ${gf === 'all' ? 'on' : ''}" data-action="guest-group" data-v="all">All (${all.length})</button>` +
-    groups.map(g => `<button class="chip ${gf === g.id ? 'on' : ''}" data-action="guest-group" data-v="${g.id}">${esc(g.name)} (${all.filter(x => (x.groups || []).includes(g.id)).length})</button>`).join('');
-  const scope = gf === 'all' ? all : all.filter(g => (g.groups || []).includes(gf));
+  const lastG = JSON.parse(sessionStorage.getItem('lastGroups') || '[]'), lastL = JSON.parse(sessionStorage.getItem('lastLabels') || '[]');
+  const chip = (act, id, on, name, n, color) => `<button class="chip ${on ? 'on' : ''}" data-action="${act}" data-v="${esc(id)}" ${color ? `style="${colorVars(color)}"` : ''}>${color ? '<i class="dot"></i>' : ''}${esc(name)} (${n})</button>`;
+  const gChips = chip('guest-group', 'all', gf === 'all', 'All', all.length) + groups.map(g => chip('guest-group', g.id, gf === g.id, g.name, all.filter(x => inG(x, g.id)).length, g.color)).join('');
+  const lChips = labels.length ? `<div class="chips">${chip('guest-label', 'all', lf === 'all', 'All labels', all.length) +
+    labels.map(l => chip('guest-label', l.id, lf === l.id, '#' + l.name, all.filter(x => inL(x, l.id)).length, l.color)).join('')}</div>` : '';
+  const scope = all.filter(match);
   const yes = scope.filter(g => g.rsvp === 'yes');
+  const scopeName = [gf !== 'all' ? groupName(gf) : '', lf !== 'all' ? '#' + ((labels.find(l => l.id === lf) || {}).name || '') : ''].filter(Boolean).join(' + ') || 'Semua tamu';
   const stat = `<div class="stat" style="margin-bottom:10px">
-    <div class="card"><div class="muted small">${gf === 'all' ? 'Semua tamu' : esc(groupName(gf))}</div><div class="n">${scope.length} undangan</div></div>
+    <div class="card"><div class="muted small">${esc(scopeName)}</div><div class="n">${scope.length} undangan</div></div>
     <div class="card"><div class="muted small">Konfirmasi hadir</div><div class="n" style="color:var(--sage)">${yes.length} · ${yes.reduce((a, g) => a + pax(g), 0)} orang</div></div></div>`;
-  const perGroup = gf === 'all' && groups.length ? `<div class="card"><b>Total per grup</b>${groups.map(g => {
-    const m = all.filter(x => (x.groups || []).includes(g.id)), y = m.filter(x => x.rsvp === 'yes');
-    return `<div class="item"><div class="grow">${esc(g.name)}<div class="muted small">${m.length} undangan</div></div>
-      <div class="price">${y.reduce((a, x) => a + pax(x), 0)} orang<div class="muted small" style="font-weight:400">hadir</div></div></div>`;
-  }).join('')}</div>` : '';
-  return `<div class="chips">${chips}</div>${stat}
+  const totals = (title, items, test) => `<div class="card"><b>${title}</b>${items.map(x => {
+    const m = all.filter(g => test(g, x.id)), y = m.filter(g => g.rsvp === 'yes');
+    return `<div class="item" style="${colorVars(x.color)}"><div class="grow"><i class="dot"></i> ${esc(x.pre || '')}${esc(x.name)}<div class="muted small">${m.length} undangan</div></div>
+      <div class="price">${y.reduce((a, g) => a + pax(g), 0)} orang<div class="muted small" style="font-weight:400">hadir</div></div></div>`;
+  }).join('')}</div>`;
+  const showTotals = gf === 'all' && lf === 'all';
+  const perGroup = showTotals && groups.length ? totals('Total per grup', groups, inG) : '';
+  const perLabel = showTotals && labels.length ? totals('Total per label', labels.map(l => ({ ...l, pre: '#' })), inL) : '';
+  return `<div class="chips">${gChips}</div>${lChips}${stat}
     <div class="card"><b>Quick add guest</b>
       <input id="g-name" data-keep placeholder="Guest / family name" autocomplete="off">
-      <div class="checks">${groups.map(g => `<label><input type="checkbox" class="g-grp" value="${g.id}" ${lastSel.includes(g.id) ? 'checked' : ''}>${esc(g.name)}</label>`).join('')}</div>
-      <div class="row" style="margin-top:10px"><button class="primary grow" data-action="add-guest">Add</button>
-      <button class="soft" data-action="manage-groups">Manage groups</button></div></div>
-    ${perGroup}
+      <div class="sub-h">Groups</div>
+      <div class="sels">${groups.map(g => selChip('g-grp', g.id, g.name, g.color, lastG.includes(g.id))).join('')}</div>
+      <div class="sub-h">Labels</div>
+      <div class="sels">${labels.map(l => selChip('g-lbl', l.id, l.name, l.color, lastL.includes(l.id), '#')).join('')}
+        <button class="soft sm" data-action="new-label">＋ Label baru</button></div>
+      <div class="row" style="margin-top:12px"><button class="primary grow" data-action="add-guest">Add</button></div>
+      <div class="row" style="margin-top:8px"><button class="soft grow" data-action="manage-groups">Manage groups</button>
+        <button class="soft grow" data-action="manage-labels">Manage labels</button></div></div>
+    ${perGroup}${perLabel}
     <input id="g-search" data-keep placeholder="Search name…" value="${esc(ui.guestSearch)}" style="margin-bottom:10px">
     <div id="g-list">${list.length ? `<div class="card" style="padding:4px 14px">${list.map(g => `<div class="item">
       <div class="grow" data-action="open-guest" data-id="${g.id}" style="cursor:pointer"><b>${esc(g.name)}</b>
         ${pax(g) > 1 ? `<span class="pill">${pax(g)} orang</span>` : ''}
         ${g.phone ? `<span class="muted small">${esc(g.phone)}</span>` : ''}
-        <div>${(g.groups || []).map(id => `<span class="pill">${esc(groupName(id))}</span>`).join('')}</div>
+        <div>${(g.groups || []).map(id => tagHtml(groupColor(id), groupName(id))).join('')}${(g.labels || []).map(id => { const l = labels.find(x => x.id === id); return l ? tagHtml(l.color, l.name, '#') : ''; }).join('')}</div>
         ${g.note ? `<div class="muted small">${esc(g.note)}</div>` : ''}
         <div class="rsvp">${RSVP.map(([v, l, c]) => `<button class="${g.rsvp === v ? 'on ' + c : ''}" data-action="rsvp" data-id="${g.id}" data-v="${v}">${l}</button>`).join('')}</div>
       </div></div>`).join('')}</div>` : '<div class="empty">Belum ada tamu di daftar ini.</div>'}</div>`;
 }
 function guestModal(id) {
   const ex = S.guests.find(g => g.id === id);
-  const g = ex ? structuredClone(ex) : { id: uid(), name: '', groups: [], note: '', phone: '', rsvp: 'invited', pax: 1, deletedAt: 0 };
-  g.groups ??= [];
-  openModal(`<div class="m-head"><h2>Edit guest</h2><button class="x" data-m="cancel">✕</button></div>
+  const g = ex ? structuredClone(ex) : { id: uid(), name: '', groups: [], labels: [], note: '', phone: '', rsvp: 'invited', pax: 1, deletedAt: 0 };
+  g.groups ??= []; g.labels ??= [];
+  let adding = false, newColor = firstFree(labelsC());
+  const html = () => `<div class="m-head"><h2>Edit guest</h2><button class="x" data-m="cancel">✕</button></div>
     <label>Name<input id="gm-name" value="${esc(g.name)}"></label>
     <div class="row2"><label>Phone (optional)<input id="gm-phone" type="tel" value="${esc(g.phone || '')}"></label>
       <label>Jumlah orang<input id="gm-pax" type="number" inputmode="numeric" min="1" value="${Math.max(1, Number(g.pax) || 1)}"></label></div>
     <label>RSVP<select id="gm-rsvp">${RSVP.map(([v, l]) => `<option value="${v}" ${g.rsvp === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
-    <label>Groups</label><div class="checks">${S.meta.groups.map(x => `<label><input type="checkbox" class="gm-grp" value="${x.id}" ${g.groups.includes(x.id) ? 'checked' : ''}>${esc(x.name)}</label>`).join('')}</div>
+    <div class="sub-h">Groups</div><div class="sels">${groupsC().map(x => selChip('gm-grp', x.id, x.name, x.color, g.groups.includes(x.id))).join('')}</div>
+    <div class="sub-h">Labels</div><div class="sels">${labelsC().map(x => selChip('gm-lbl', x.id, x.name, x.color, g.labels.includes(x.id), '#')).join('')}
+      ${adding ? '' : '<button class="soft sm" data-m="in-open">＋ Label baru</button>'}</div>
+    ${adding ? inlineNew(newColor, 'New label name…') : ''}
     <label>Notes<textarea id="gm-note" rows="2">${esc(g.note || '')}</textarea></label>
     <div class="m-foot">${ex ? '<button class="danger" data-m="delete">Delete</button>' : ''}
-      <button class="ghost" data-m="cancel">Cancel</button><button class="primary" data-m="save">Save</button></div>`, {
+      <button class="ghost" data-m="cancel">Cancel</button><button class="primary" data-m="save">Save</button></div>`;
+  const grab = () => ({ ...g, name: $('#gm-name', mbody).value.trim(), phone: $('#gm-phone', mbody).value.trim(), note: $('#gm-note', mbody).value.trim(),
+    pax: Math.max(1, Number($('#gm-pax', mbody).value) || 1), rsvp: $('#gm-rsvp', mbody).value,
+    groups: [...mbody.querySelectorAll('.gm-grp:checked')].map(x => x.value), labels: [...mbody.querySelectorAll('.gm-lbl:checked')].map(x => x.value) });
+  const redraw = () => { Object.assign(g, grab()); setModalHtml(html()); };
+  openModal(html(), {
     async click(e, b) {
       const a = b.dataset.m;
       if (a === 'cancel') return closeModal();
+      if (a === 'in-open') { adding = true; newColor = firstFree(labelsC()); redraw(); return $('#in-name', mbody)?.focus(); }
+      if (a === 'in-cancel') { adding = false; return redraw(); }
+      if (a === 'pick') { newColor = b.dataset.k; mbody.querySelectorAll('.sw').forEach(x => x.classList.toggle('on', x.dataset.k === newColor)); return; }
+      if (a === 'in-add') {
+        const v = ($('#in-name', mbody).value || '').trim(); if (!v) return toast('Isi nama label dulu.');
+        const L = plain(labelsC());
+        let it = L.find(x => x.name.trim().toLowerCase() === v.toLowerCase());
+        if (!it) { it = { id: 'l-' + uid(), name: v, color: newColor }; L.push(it); S.meta = { ...S.meta, labels: L }; await saveMeta({ labels: L }); }
+        Object.assign(g, grab()); if (!g.labels.includes(it.id)) g.labels.push(it.id);
+        adding = false; setModalHtml(html()); return;
+      }
       if (a === 'delete') { if (confirm('Pindahkan tamu ini ke Recently deleted?')) { await softDelete('guests', g.id, g.name); closeModal(); } return; }
       if (a !== 'save') return;
-      const name = $('#gm-name', mbody).value.trim();
-      if (!name) return toast('Nama wajib diisi.');
-      const now = { ...g, name, phone: $('#gm-phone', mbody).value.trim(), note: $('#gm-note', mbody).value.trim(),
-        pax: Math.max(1, Number($('#gm-pax', mbody).value) || 1), rsvp: $('#gm-rsvp', mbody).value,
-        groups: [...mbody.querySelectorAll('.gm-grp:checked')].map(x => x.value) };
-      if (ex) { const d = diffDoc(ex, now); if (Object.keys(d).length) await patch('guests', g.id, d, `mengubah tamu: ${name}`); }
-      else await put('guests', now, `menambah tamu: ${name}`);
+      const now = grab();
+      if (!now.name) return toast('Nama wajib diisi.');
+      if (ex) { const d = diffDoc(ex, now); if (Object.keys(d).length) await patch('guests', g.id, d, `mengubah tamu: ${now.name}`); }
+      else await put('guests', now, `menambah tamu: ${now.name}`);
       cele(e); closeModal();
     }
   });
 }
-function groupsModal() {
-  const draw = () => `<div class="m-head"><h2>Manage guest groups</h2><button class="x" data-m="close">✕</button></div>
-    <p class="muted small">Contoh: Grup Zoom, Balai Kerajaan, Balai Kerajaan + Makan Bersama. Menghapus grup tidak menghapus tamunya.</p>
-    ${S.meta.groups.map(g => `<div class="row" style="margin-top:8px"><input data-gid="${g.id}" value="${esc(g.name)}"><button class="ico" data-m="gdel" data-id="${g.id}">🗑</button></div>`).join('')}
-    <div class="add-sub"><input id="new-grp" placeholder="New group name…"><button class="soft" data-m="gadd">Add</button></div>
+const KINDS = {
+  groups: { key: 'groups', pre: 'g-', title: 'Manage guest groups', ph: 'New group name…', get: groupsC,
+    hint: 'Contoh: Grup Zoom, Balai Kerajaan. Menghapus grup tidak menghapus tamunya.', one: 'group' },
+  labels: { key: 'labels', pre: 'l-', title: 'Manage labels', ph: 'New label name…', get: labelsC,
+    hint: 'Contoh: Keluarga Erik, Keluarga Oni, Teman kerja, Gereja. Menghapus label tidak menghapus tamunya.', one: 'label' },
+  categories: { key: 'categories', pre: 'c-', title: 'Manage budget categories', ph: 'New category name…', get: catsC,
+    hint: 'Contoh: Pakaian, Makanan, Dokumentasi. Mengubah nama kategori ikut mengubah item budget yang memakainya. Menghapus kategori tidak menghapus itemnya.', one: 'category' }
+};
+/* Satu jendela Manage untuk grup, label, dan kategori: ganti nama, ganti warna, tambah, hapus. */
+function manageModal(kind) {
+  const K = KINDS[kind];
+  let L = plain(K.get()), openId = null, draft = '', newColor = firstFree(L), tm = null;
+  const orig = Object.fromEntries(L.map(x => [x.id, x.name]));
+  const persist = async () => { clearTimeout(tm); S.meta = { ...S.meta, [K.key]: L }; await saveMeta({ [K.key]: L }); };
+  const draw = () => `<div class="m-head"><h2>${K.title}</h2><button class="x" data-m="close">✕</button></div>
+    <p class="muted small">${K.hint}</p>
+    ${L.map(x => `<div class="mrow"><button type="button" class="dotbtn" data-m="rowcolor" data-id="${esc(x.id)}" style="${colorVars(x.color)}" aria-label="Ganti warna"><i class="dot big"></i></button>
+      <input data-gid="${esc(x.id)}" value="${esc(x.name)}"><button class="ico" data-m="gdel" data-id="${esc(x.id)}" aria-label="Hapus">🗑</button></div>
+      ${openId === x.id ? swatches(x.color, `data-id="${esc(x.id)}"`) : ''}`).join('')}
+    <div class="sub-h">Tambah baru</div>
+    <input id="new-item" placeholder="${K.ph}" value="${esc(draft)}" autocomplete="off">
+    ${swatches(newColor, 'data-id="__new"')}
+    <div class="row" style="margin-top:10px"><button class="soft grow" data-m="gadd">Add</button></div>
     <div class="m-foot"><button class="primary" data-m="close">Done</button></div>`;
   openModal(draw(), {
     input(e) {
-      const id = e.target.dataset.gid; if (!id) return;
-      S.meta.groups = S.meta.groups.map(g => g.id === id ? { ...g, name: e.target.value } : g);
-      clearTimeout(groupsModal.t);
-      groupsModal.t = setTimeout(() => saveMeta({ groups: S.meta.groups }), 500);
+      const t = e.target;
+      if (t.id === 'new-item') { draft = t.value; return; }
+      const id = t.dataset.gid; if (!id) return;
+      L = L.map(x => x.id === id ? { ...x, name: t.value } : x);
+      clearTimeout(tm); tm = setTimeout(persist, 600);
     },
     async click(e, b) {
       const a = b.dataset.m;
-      if (a === 'close') { clearTimeout(groupsModal.t); await saveMeta({ groups: S.meta.groups }); return closeModal(); }
+      if (a === 'close') {
+        L = L.map(x => ({ ...x, name: x.name.trim() || orig[x.id] || 'Tanpa nama' }));
+        await persist();
+        if (kind === 'categories') {          // nama kategori baru ikut ke item budget yang memakainya
+          for (const x of L) {
+            const was = orig[x.id]; if (!was || was === x.name) continue;
+            for (const i of live.budget()) if ((i.category || '').trim().toLowerCase() === was.trim().toLowerCase())
+              await patch('budget', i.id, { category: x.name }, `mengubah kategori: ${i.name}`);
+          }
+        }
+        return closeModal();
+      }
+      if (a === 'rowcolor') { openId = openId === b.dataset.id ? null : b.dataset.id; return setModalHtml(draw()); }
+      if (a === 'pick') {
+        const id = b.dataset.id;
+        if (id === '__new') { newColor = b.dataset.k; mbody.querySelectorAll('.sw[data-id="__new"]').forEach(x => x.classList.toggle('on', x.dataset.k === newColor)); return; }
+        L = L.map(x => x.id === id ? { ...x, color: b.dataset.k } : x); openId = null;
+        await persist(); return setModalHtml(draw());
+      }
       if (a === 'gadd') {
-        const v = $('#new-grp', mbody).value.trim(); if (!v) return;
-        S.meta.groups = [...S.meta.groups, { id: 'g-' + uid(), name: v }];
-        await saveMeta({ groups: S.meta.groups }); setModalHtml(draw());
+        const v = ($('#new-item', mbody).value || '').trim(); if (!v) return toast('Isi nama dulu.');
+        if (L.some(x => x.name.trim().toLowerCase() === v.toLowerCase())) return toast('Nama itu sudah ada.');
+        L = [...L, { id: K.pre + uid(), name: v, color: newColor }]; draft = ''; newColor = firstFree(L);
+        await persist(); cele(e); return setModalHtml(draw());
       }
-      if (a === 'gdel' && confirm('Hapus grup ini?')) {
-        S.meta.groups = S.meta.groups.filter(g => g.id !== b.dataset.id);
-        await saveMeta({ groups: S.meta.groups }); setModalHtml(draw());
+      if (a === 'gdel' && confirm(`Hapus ${K.one} ini?`)) {
+        L = L.filter(x => x.id !== b.dataset.id);
+        await persist(); setModalHtml(draw());
       }
+    }
+  });
+}
+/* Buat satu label/grup/kategori baru dari halaman utama. */
+function tagModal(kind, onDone) {
+  const K = KINDS[kind]; let color = firstFree(K.get());
+  openModal(`<div class="m-head"><h2>New ${K.one}</h2><button class="x" data-m="cancel">✕</button></div>
+    <label>Name<input id="tg-name" placeholder="${K.ph}" autocomplete="off"></label>
+    <div class="sub-h">Warna</div>${swatches(color)}
+    <div class="m-foot"><button class="ghost" data-m="cancel">Cancel</button><button class="primary" data-m="save">Save</button></div>`, {
+    async click(e, b) {
+      const a = b.dataset.m;
+      if (a === 'cancel') return closeModal();
+      if (a === 'pick') { color = b.dataset.k; mbody.querySelectorAll('.sw').forEach(x => x.classList.toggle('on', x.dataset.k === color)); return; }
+      if (a !== 'save') return;
+      const name = $('#tg-name', mbody).value.trim(); if (!name) return toast('Isi nama dulu.');
+      const L = plain(K.get());
+      let it = L.find(x => x.name.trim().toLowerCase() === name.toLowerCase());
+      if (!it) { it = { id: K.pre + uid(), name, color }; L.push(it); S.meta = { ...S.meta, [K.key]: L }; await saveMeta({ [K.key]: L }); }
+      cele(e); closeModal(); if (onDone) onDone(it);
     }
   });
 }
 
 /* ---------- Budget ---------- */
 const sub$ = i => (Number(i.price) || 0) * (Number(i.qty) || 1);
-function budgetRow(i, optional) {
+function budgetRow(i, optional, cmap) {
   return `<div class="item">
     <button class="chk ${optional ? (i.pick ? 'on' : '') : (i.paid ? 'on' : '')}" data-action="${optional ? 'toggle-pick' : 'toggle-paid'}" data-id="${i.id}"
       aria-label="${optional ? 'Dipertimbangkan' : 'Paid'}"></button>
     <div class="grow" data-action="open-budget" data-id="${i.id}" style="cursor:pointer"><b>${esc(i.name)}</b>
-      <div class="muted small">${i.category ? esc(i.category) + ' · ' : ''}${(Number(i.qty) || 1) > 1 ? i.qty + ' × ' + rupiah(i.price) : ''}${i.notes ? ' · 📝' : ''}${(i.photos || []).length ? ' · 📷' + i.photos.length : ''}</div></div>
+      <div class="muted small">${i.category ? tagHtml((cmap.get(i.category.trim().toLowerCase()) || {}).color || 'gray', i.category) : ''}${[(Number(i.qty) || 1) > 1 ? i.qty + ' × ' + rupiah(i.price) : '', i.notes ? '📝' : '', (i.photos || []).length ? '📷' + i.photos.length : ''].filter(Boolean).join(' · ')}</div></div>
     <div class="price">${rupiah(sub$(i))}</div>
     ${optional ? `<button class="soft" data-action="make-sure" data-id="${i.id}">Confirm</button>` : ''}</div>`;
 }
@@ -901,11 +1048,14 @@ function renderBudget() {
   const target = Number(S.meta.budgetTarget) || 0;
   const diff = (label, v) => target ? `<div class="row small"><span class="grow muted">${label}</span>
     <b style="color:${target - v < 0 ? 'var(--warn)' : 'var(--sage)'}">${target - v < 0 ? 'Over ' + rupiah(v - target) : 'Left ' + rupiah(target - v)}</b></div>` : '';
-  const cats = {};
-  sure.forEach(i => { const k = i.category || 'Lainnya'; cats[k] = (cats[k] || 0) + sub$(i); });
-  const catRows = Object.entries(cats).sort((a, b) => b[1] - a[1]).map(([k, v]) => `<div class="item">
-      <div class="grow">${esc(k)}<div class="bar" style="margin-top:6px"><i style="width:${tSure ? Math.round(v / tSure * 100) : 0}%"></i></div></div>
-      <div class="price">${rupiah(v)}<div class="muted small" style="font-weight:400">${tSure ? Math.round(v / tSure * 100) : 0}%</div></div></div>`).join('');
+  const cmap = catMap(), cats = {};
+  sure.forEach(i => {
+    const raw = (i.category || '').trim(), k = raw.toLowerCase() || '__none', c = cmap.get(k);
+    (cats[k] ||= { name: c ? c.name : (raw || 'Lainnya'), color: c ? c.color : 'gray', v: 0 }).v += sub$(i);
+  });
+  const catRows = Object.values(cats).sort((a, b) => b.v - a.v).map(c => `<div class="item" style="${colorVars(c.color)}">
+      <div class="grow"><i class="dot"></i> ${esc(c.name)}<div class="bar" style="margin-top:6px"><i style="width:${tSure ? Math.round(c.v / tSure * 100) : 0}%;background:linear-gradient(90deg,var(--c),var(--cl))"></i></div></div>
+      <div class="price">${rupiah(c.v)}<div class="muted small" style="font-weight:400">${tSure ? Math.round(c.v / tSure * 100) : 0}%</div></div></div>`).join('');
   return `<div class="stat">
       <div class="card"><div class="muted small">Total confirmed</div><div class="n">${rupiah(tSure)}</div></div>
       <div class="card"><div class="muted small">Paid</div><div class="n" style="color:var(--sage)">${rupiah(paid)}</div></div>
@@ -913,12 +1063,13 @@ function renderBudget() {
       <div class="card"><div class="muted small">Budget target</div><div class="n">${target ? rupiah(target) : '—'}</div></div></div>
     ${target ? `<div class="card" style="margin-top:10px">${diff('Confirmed vs target', tSure)}</div>` : ''}
     <h2>Confirmed items</h2>
-    <div class="card" style="padding:4px 14px">${sure.length ? sure.map(i => budgetRow(i, false)).join('') : '<div class="empty">No items yet. Tap ＋ to add.</div>'}
+    <div class="card" style="padding:4px 14px">${sure.length ? sure.map(i => budgetRow(i, false, cmap)).join('') : '<div class="empty">No items yet. Tap ＋ to add.</div>'}
       <div class="total"><span>Total confirmed</span><span>${rupiah(tSure)}</span></div></div>
-    ${catRows ? `<h2>Per category</h2><div class="card" style="padding:4px 14px">${catRows}</div>` : ''}
+    <div class="row" style="align-items:flex-end"><h2 class="grow">Per category</h2><button class="soft sm" data-action="manage-cats">Manage categories</button></div>
+    ${catRows ? `<div class="card" style="padding:4px 14px">${catRows}</div>` : '<div class="muted small" style="margin:0 2px 8px">Belum ada kategori. Pilih atau buat kategori saat menambah item.</div>'}
     <h2>Optional (undecided)</h2>
     <div class="muted small" style="margin:-4px 2px 8px">Centang item yang sedang dipertimbangkan untuk melihat simulasi total.</div>
-    <div class="card opt" style="padding:4px 14px">${opt.length ? opt.map(i => budgetRow(i, true)).join('') : '<div class="empty">Belum ada item opsional.</div>'}
+    <div class="card opt" style="padding:4px 14px">${opt.length ? opt.map(i => budgetRow(i, true, cmap)).join('') : '<div class="empty">Belum ada item opsional.</div>'}
       <div class="total"><span>Total optional</span><span>${rupiah(tOpt)}</span></div>
       <div class="row small" style="margin-top:6px"><span class="grow muted">Selected</span><b>${rupiah(picked)}</b></div></div>
     <div class="card"><div class="row"><span class="grow muted">Confirmed + selected</span><b>${rupiah(tSure + picked)}</b></div>${diff('vs target', tSure + picked)}
@@ -931,15 +1082,18 @@ function budgetModal(id) {
     : { id: uid(), name: '', price: '', qty: 1, category: '', status: 'pasti', paid: false, pick: false, notes: '', photos: [], deletedAt: 0 };
   it.photos ??= [];
   const added = new Set(), removed = new Set();
-  const cats = [...new Set(live.budget().map(x => x.category).filter(Boolean))];
+  let adding = false, newColor = firstFree(catsC());
   const html = () => `<div class="m-head"><h2>${ex ? 'Edit item' : 'New item'}</h2><button class="x" data-m="cancel">✕</button></div>
     <label>Item name<input id="b-name" value="${esc(it.name)}" placeholder="mis. Sewa gedung"></label>
     <div class="row2"><label>Unit price (Rp)<input id="b-price" type="number" inputmode="numeric" min="0" value="${esc(it.price)}"></label>
       <label>Qty<input id="b-qty" type="number" inputmode="numeric" min="1" value="${esc(it.qty)}"></label></div>
-    <div class="row2"><label>Category<input id="b-cat" list="b-cats" value="${esc(it.category)}" placeholder="mis. Pakaian"></label>
+    <div class="row2"><label>Category<select id="b-cat"><option value="">(tanpa kategori)</option>
+        ${catsC().map(c => `<option value="${esc(c.name)}" ${!adding && (it.category || '').trim().toLowerCase() === c.name.trim().toLowerCase() ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+        <option value="__new" ${adding ? 'selected' : ''}>＋ Kategori baru…</option></select></label>
       <label>Status<select id="b-status"><option value="pasti" ${it.status !== 'opsional' ? 'selected' : ''}>Confirmed</option>
         <option value="opsional" ${it.status === 'opsional' ? 'selected' : ''}>Optional</option></select></label></div>
-    <datalist id="b-cats">${cats.map(c => `<option value="${esc(c)}">`).join('')}</datalist>
+    ${it.category && !adding ? `<div>${tagHtml(catColorOf(it.category), it.category)}</div>` : ''}
+    ${adding ? inlineNew(newColor, 'New category name…') : ''}
     <label>Notes<textarea id="b-notes" rows="2">${esc(it.notes || '')}</textarea></label>
     <label>Photos <span class="muted small">(nota, penawaran)</span></label>
     <div class="photos">${it.photos.map(p => S.photos[p] ? `<img src="${S.photos[p]}" data-m="view-photo" data-pid="${p}" alt="Foto" loading="lazy">` : '<div class="ph"></div>').join('')}
@@ -947,14 +1101,28 @@ function budgetModal(id) {
     <div class="m-foot">${ex ? '<button class="danger" data-m="delete">Delete</button>' : ''}
       <button class="ghost" data-m="cancel">Cancel</button><button class="primary" data-m="save">Save</button></div>`;
   const grab = () => ({ ...it, name: $('#b-name', mbody).value.trim(), price: Number($('#b-price', mbody).value) || 0,
-    qty: Math.max(1, Number($('#b-qty', mbody).value) || 1), category: $('#b-cat', mbody).value.trim(),
+    qty: Math.max(1, Number($('#b-qty', mbody).value) || 1), category: $('#b-cat', mbody).value === '__new' ? (it.category || '') : $('#b-cat', mbody).value.trim(),
     status: $('#b-status', mbody).value, notes: $('#b-notes', mbody).value.trim() });
-  const redraw = () => { Object.assign(it, grab()); setModalHtml(html()); };
+  const redraw = cat => { Object.assign(it, grab()); if (cat !== undefined) it.category = cat; setModalHtml(html()); };
   openModal(html(), {
     onClose: () => { for (const p of added) { delete S.photos[p]; store.del('photos', p); } },
+    input(e) {
+      if (e.target.id !== 'b-cat') return;
+      if (e.target.value === '__new') { adding = true; newColor = firstFree(catsC()); redraw(); $('#in-name', mbody)?.focus(); }
+      else { adding = false; redraw(); }
+    },
     async click(e, b) {
       const a = b.dataset.m;
       if (a === 'cancel') return closeModal();
+      if (a === 'in-cancel') { adding = false; return redraw(); }
+      if (a === 'pick') { newColor = b.dataset.k; mbody.querySelectorAll('.sw').forEach(x => x.classList.toggle('on', x.dataset.k === newColor)); return; }
+      if (a === 'in-add') {
+        const v = ($('#in-name', mbody).value || '').trim(); if (!v) return toast('Isi nama kategori dulu.');
+        const L = plain(catsC());
+        let c = L.find(x => x.name.trim().toLowerCase() === v.toLowerCase());
+        if (!c) { c = { id: 'c-' + uid(), name: v, color: newColor }; L.push(c); S.meta = { ...S.meta, categories: L }; await saveMeta({ categories: L }); }
+        adding = false; return redraw(c.name);
+      }
       if (a === 'add-photo') return pickPhotos(p => { it.photos.push(p); added.add(p); redraw(); });
       if (a === 'view-photo') {
         const pid = b.dataset.pid;
@@ -1151,13 +1319,17 @@ view.addEventListener('click', async e => {
   else if (a === 'import-guide') importGuide();
   else if (a === 'edit-deadline') deadlineModal();
   else if (a === 'guest-group') { ui.guestGroup = b.dataset.v; render(); }
+  else if (a === 'guest-label') { ui.guestLabel = b.dataset.v; render(); }
+  else if (a === 'new-label') tagModal('labels', it => { const L = JSON.parse(sessionStorage.getItem('lastLabels') || '[]'); L.push(it.id); sessionStorage.setItem('lastLabels', JSON.stringify(L)); render(); });
   else if (a === 'add-guest') {
     const el = $('#g-name'), name = el.value.trim();
     if (!name) return toast('Isi nama tamu.');
     const groups = [...view.querySelectorAll('.g-grp:checked')].map(x => x.value);
+    const labels = [...view.querySelectorAll('.g-lbl:checked')].map(x => x.value);
     sessionStorage.setItem('lastGroups', JSON.stringify(groups));
+    sessionStorage.setItem('lastLabels', JSON.stringify(labels));
     el.value = '';
-    await put('guests', { id: uid(), name, groups, note: '', phone: '', rsvp: 'invited', pax: 1, deletedAt: 0 }, `menambah tamu: ${name}`);
+    await put('guests', { id: uid(), name, groups, labels, note: '', phone: '', rsvp: 'invited', pax: 1, deletedAt: 0 }, `menambah tamu: ${name}`);
     cele(e); $('#g-name')?.focus();
   }
   else if (a === 'rsvp') {
@@ -1168,7 +1340,9 @@ view.addEventListener('click', async e => {
     if (v === 'yes' && g.rsvp !== 'yes') cele(e);
   }
   else if (a === 'open-guest') guestModal(id);
-  else if (a === 'manage-groups') groupsModal();
+  else if (a === 'manage-groups') manageModal('groups');
+  else if (a === 'manage-labels') manageModal('labels');
+  else if (a === 'manage-cats') manageModal('categories');
   else if (a === 'new-budget') budgetModal();
   else if (a === 'open-budget') budgetModal(id);
   else if (a === 'toggle-paid' || a === 'toggle-pick') {
@@ -1225,8 +1399,8 @@ view.addEventListener('click', async e => {
     el.href = URL.createObjectURL(blob); el.download = 'cadangan-pernikahan-' + toISO(new Date()) + '.json'; el.click();
   }
   else if (a === 'csv-guests') {
-    downloadCSV('tamu-' + toISO(new Date()) + '.csv', [['Nama', 'Grup', 'RSVP', 'Jumlah orang', 'HP', 'Catatan'],
-      ...live.guests().map(g => [g.name, (g.groups || []).map(groupName).join(' | '), g.rsvp || 'invited', Math.max(1, Number(g.pax) || 1), g.phone || '', g.note || ''])]);
+    downloadCSV('tamu-' + toISO(new Date()) + '.csv', [['Nama', 'Grup', 'Label', 'RSVP', 'Jumlah orang', 'HP', 'Catatan'],
+      ...live.guests().map(g => [g.name, (g.groups || []).map(groupName).join(' | '), (g.labels || []).map(id => (labelsC().find(l => l.id === id) || {}).name).filter(Boolean).join(' | '), g.rsvp || 'invited', Math.max(1, Number(g.pax) || 1), g.phone || '', g.note || ''])]);
   }
   else if (a === 'csv-budget') {
     const L = live.budget();

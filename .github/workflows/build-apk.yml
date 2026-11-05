@@ -65,6 +65,18 @@ jobs:
       - name: Tambah platform Android
         run: npx cap add android && npx cap sync android
 
+      - name: Pasang icon aplikasi (foto Erik & Oni)
+        run: |
+          R=android/app/src/main/res
+          rm -f $R/mipmap-anydpi-v26/ic_launcher.xml $R/mipmap-anydpi-v26/ic_launcher_round.xml
+          for pair in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
+            D=$R/mipmap-${pair%%:*}; S=${pair##*:}
+            mkdir -p $D
+            convert icons/icon-512.png -resize ${S}x${S} $D/ic_launcher.png
+            convert icons/icon-512.png -resize ${S}x${S} -alpha set \( +clone -channel A -evaluate set 0 +channel -fill white -draw "circle $((S/2)),$((S/2)) $((S/2)),0" \) -compose DstIn -composite $D/ic_launcher_round.png
+            cp $D/ic_launcher.png $D/ic_launcher_foreground.png
+          done
+
       - name: Pasang google-services.json (untuk push)
         run: |
           if [ -f android-assets/google-services.json ]; then
