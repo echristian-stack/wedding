@@ -1,0 +1,53 @@
+rules_version = '2';
+// Aturan keamanan Erik & Oni — 3 peran: pemilik (owner), panitia, tamu (viewer).
+// Setiap HP tercatat di members/{uid} setelah membuka tautan undangan.
+// Tautan dicabut = dokumen invites/{kode} dihapus → HP yang memakai tautan itu langsung tidak punya akses.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /weddings/{room}/{col}/{id} {
+      function dp(c, d) { return /databases/$(database)/documents/weddings/$(room)/$(c)/$(d); }
+      function me() { return get(dp('members', request.auth.uid)).data; }
+      function isMember() {
+        return request.auth != null && room.size() >= 12
+          && exists(dp('members', request.auth.uid))
+          && exists(dp('invites', me().code));
+      }
+      function isOwner() { return isMember() && me().role == 'owner'; }
+      function inCommittee(cid) {
+        return isMember() && me().role == 'panitia'
+          && get(dp('people', me().person)).data.committees.keys().hasAny([cid]);
+      }
+      // Klaim tautan: data member harus cocok dengan undangan yang masih berlaku.
+      function validClaim() {
+        let d = request.resource.data;
+        let inv = get(dp('invites', d.code)).data;
+        return request.auth != null && id == request.auth.uid && room.size() >= 12
+          && exists(dp('invites', d.code))
+          && d.keys().hasOnly(['id', 'role', 'code', 'person', 'name', 'ts'])
+          && d.role == inv.role && d.get('person', '') == inv.get('person', '');
+      }
+      function panitiaOk() {
+        return isOwner() || (inCommittee(request.resource.data.cid)
+          && (resource == null || inCommittee(resource.data.cid)));
+      }
+
+      allow read: if
+           (col == 'members' && request.auth != null && (id == request.auth.uid || isOwner()))
+        || (col in ['budget', 'invites', 'devices'] && isOwner())
+        || (!(col in ['members', 'budget', 'invites', 'devices']) && isMember());
+
+      allow create, update: if
+           (col == 'members' && validClaim())
+        || (col == 'devices' && isMember() && me().role in ['owner', 'panitia']
+              && request.resource.data.uid == request.auth.uid)
+        || (col in ['ptasks', 'pnotes'] && panitiaOk())
+        || (!(col in ['members', 'devices', 'ptasks', 'pnotes']) && isOwner());
+
+      allow delete: if
+           (col == 'members' && request.auth != null && (id == request.auth.uid || isOwner()))
+        || (col == 'devices' && (isOwner() || (request.auth != null && resource.data.uid == request.auth.uid)))
+        || (col in ['ptasks', 'pnotes'] && (isOwner() || inCommittee(resource.data.cid)))
+        || (!(col in ['members', 'devices']) && isOwner());
+    }
+  }
+}

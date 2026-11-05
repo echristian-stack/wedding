@@ -60,6 +60,9 @@ async function localStore() {
   const save = (col, id) => wrap(os(db, 'readwrite').put({ k: col + '/' + id, col, id, obj: data[col][id] }));
   return {
     mode: 'local',
+    uid: 'local',
+    async idToken() { return ''; },
+    async getOne(col, id) { return clone((data[col] || {})[id] || null); },
     subscribe(col, cb) { (subs[col] ??= []).push(cb); cb(Object.values(data[col] || {}), []); },
     async put(col, obj) {
       (data[col] ??= {})[obj.id] = clone(obj);
@@ -107,6 +110,12 @@ async function cloudStore(cfg, onStatus) {
   const colRef = col => fsM.collection(db, 'weddings', room, col);
   return {
     mode: 'cloud',
+    get uid() { return auth.currentUser ? auth.currentUser.uid : ''; },
+    async idToken() { return auth.currentUser ? auth.currentUser.getIdToken() : ''; },
+    async getOne(col, id) {
+      const d = await fsM.getDoc(ref(col, id));
+      return d.exists() ? d.data() : null;
+    },
     subscribe(col, cb) {
       let first = true;
       fsM.onSnapshot(colRef(col), { includeMetadataChanges: true }, snap => {

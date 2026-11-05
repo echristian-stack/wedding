@@ -49,17 +49,31 @@ const loadCfg = () => { try { return JSON.parse(localStorage.getItem(CFG_KEY)) |
 const saveCfg = c => { try { localStorage.setItem(CFG_KEY, JSON.stringify(c)); } catch {} };
 let cfg = Object.assign({ mode: 'local', room: '', firebaseConfig: null, me: '', pushUrl: '', pushSecret: '' }, loadCfg());
 
+/* Peran: owner (Erik & Oni) mengubah semua; panitia mengubah panitianya sendiri; viewer (tamu) hanya melihat. */
+const ROLE = cfg.mode === 'cloud' ? (cfg.role || 'owner') : 'owner';
+const OWNER = ROLE === 'owner', RO = !OWNER;
+document.documentElement.classList.toggle('ro', RO);
+document.documentElement.dataset.role = ROLE;
+const rand = n => { const c = 'abcdefghjkmnpqrstuvwxyz23456789'; let r = ''; crypto.getRandomValues(new Uint8Array(n)).forEach(x => { r += c[x % c.length]; }); return r; };
+const DEFAULT_PLABELS = [
+  { id: 'pl-ketua', name: 'Ketua', color: 'purple' },
+  { id: 'pl-pengawas', name: 'Pengawas', color: 'orange' },
+  { id: 'pl-anggota', name: 'Anggota', color: 'teal' }
+];
+
 const DEFAULT_GROUPS = [
   { id: 'g-zoom', name: 'Grup Zoom', color: 'blue' },
   { id: 'g-balai', name: 'Balai Kerajaan', color: 'green' },
   { id: 'g-balai-makan', name: 'Balai Kerajaan + Makan Bersama', color: 'orange' }
 ];
-const META0 = { id: 'settings', weddingDate: '', budgetTarget: 0, groups: DEFAULT_GROUPS, labels: [], categories: [], autoRemind: true };
-const S = { tasks: [], guests: [], budget: [], photos: {}, meta: { ...META0 } };
+const META0 = { id: 'settings', weddingDate: '', budgetTarget: 0, groups: DEFAULT_GROUPS, labels: [], categories: [], committees: [], plabels: DEFAULT_PLABELS, autoRemind: true };
+const S = { tasks: [], guests: [], budget: [], photos: {}, meta: { ...META0 }, people: [], ptasks: [], pnotes: [], invites: [], members: [] };
 const live = {                       // hanya yang belum dihapus
   tasks: () => S.tasks.filter(t => !t.deletedAt),
   guests: () => S.guests.filter(g => !g.deletedAt),
-  budget: () => S.budget.filter(b => !b.deletedAt)
+  budget: () => S.budget.filter(b => !b.deletedAt),
+  people: () => S.people.filter(p => !p.deletedAt),
+  ptasks: () => S.ptasks.filter(t => !t.deletedAt)
 };
 
 let store = null;
@@ -112,6 +126,14 @@ function catsC() {
   extra.sort((a, b) => a.name.localeCompare(b.name, 'id'));
   return fillColors([...stored, ...extra]);
 }
+const committeesC = () => fillColors(S.meta.committees || []);
+const plabelsC = () => fillColors(S.meta.plabels || DEFAULT_PLABELS);
+const personOf = id => S.people.find(p => p.id === id);
+const myCommittees = () => ROLE === 'panitia' ? Object.keys((personOf(cfg.person) || {}).committees || {}) : [];
+const canEditC = cid => OWNER || myCommittees().includes(cid);
+const membersOf = cid => live.people().filter(p => p.committees && p.committees[cid]).sort((a, b) => a.name.localeCompare(b.name, 'id'));
+const assigneeName = a => !a ? '' : a.startsWith('p:') ? ((personOf(a.slice(2)) || {}).name || '(orang dihapus)') : a;
+const committeeName = cid => (committeesC().find(c => c.id === cid) || {}).name || 'Panitia';
 const catMap = () => new Map(catsC().map(c => [c.name.trim().toLowerCase(), c]));
 const catColorOf = name => (catMap().get((name || '').trim().toLowerCase()) || {}).color || 'gray';
 const firstFree = list => (PALETTE.find(x => !list.some(y => y.color === x.k)) || PALETTE[0]).k;
@@ -163,9 +185,11 @@ async function initNative() {
   }
 }
 async function registerDevice(token) {
-  if (!token || !store || store.mode !== 'cloud') return;
+  if (!token || !store || store.mode !== 'cloud' || ROLE === 'viewer') return;
+  cfg.pushToken = token; saveCfg(cfg);
   try {
-    await store.put('devices', { id: 'd' + hash32(token), token, owner: cfg.me, ts: Date.now() });
+    await store.put('devices', { id: 'd' + hash32(token), token, owner: cfg.me, uid: store.uid, role: ROLE,
+      person: cfg.person || '', mutePanitia: !!cfg.mutePanitia, ts: Date.now() });
   } catch (e) { console.warn('simpan device gagal', e); }
 }
 
@@ -261,23 +285,28 @@ window.addEventListener('popstate', () => { const f = overlays.pop(); if (f) f()
    ============================================================ */
 const stamp = o => ({ ...o, updatedAt: Date.now(), updatedBy: cfg.me });
 
-async function put(col, obj, ping) { await store.put(col, stamp(obj)); pushPing(ping); }
-async function patch(col, id, fields, ping) { await store.patch(col, id, stamp(fields)); pushPing(ping); }
+async function put(col, obj, ping, cid) { await store.put(col, stamp(obj)); pushPing(ping, cid); }
+async function patch(col, id, fields, ping, cid) { await store.patch(col, id, stamp(fields)); pushPing(ping, cid); }
 const saveMeta = p => store.patch('meta', 'settings', stamp({ ...p, id: 'settings' }));
 
-// Kirim kabar ke HP pasangan lewat Cloudflare Worker (opsional; gagal pun tidak mengganggu).
-let pingTimer = 0, pingQueue = [];
-function pushPing(text) {
-  if (!text || !cfg.pushUrl || store?.mode !== 'cloud') return;
-  pingQueue.push(text);
-  clearTimeout(pingTimer);
-  pingTimer = setTimeout(async () => {
-    const list = pingQueue.splice(0);
+// Kirim kabar lewat Cloudflare Worker (opsional; gagal pun tidak mengganggu).
+// cid kosong = perubahan utama (ke Erik & Oni); cid terisi = perubahan di satu panitia (ke anggotanya + Erik & Oni).
+const pingQ = {};
+function pushPing(text, cid = '') {
+  if (!text || !cfg.pushUrl || store?.mode !== 'cloud' || ROLE === 'viewer') return;
+  if (ROLE === 'panitia' && !cid) return;
+  const q = pingQ[cid] ??= { list: [], t: 0 };
+  q.list.push(text);
+  clearTimeout(q.t);
+  q.t = setTimeout(async () => {
+    const list = q.list.splice(0);
     const body = list.length > 1 ? `${list.length} perubahan` : list[0];
     try {
+      const idToken = await store.idToken().catch(() => '');
       await fetch(cfg.pushUrl, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ secret: cfg.pushSecret, room: cfg.room, from: cfg.me, title: `${cfg.me} mengubah sesuatu`, body })
+        body: JSON.stringify({ secret: OWNER ? cfg.pushSecret : '', idToken, room: cfg.room, from: cfg.me, cid,
+          title: cid ? `${committeeName(cid)} · ${cfg.me}` : `${cfg.me} mengubah sesuatu`, body })
       });
     } catch (e) { console.warn('push gagal (diabaikan)', e.message); }
   }, 2500);
@@ -289,6 +318,17 @@ function pushPing(text) {
 async function boot() {
   if ('serviceWorker' in navigator && !native) {
     navigator.serviceWorker.register('./sw.js').then(r => { swReg = r; }).catch(() => {});
+  }
+  if (location.hash.startsWith('#join=')) {
+    const h = location.hash;
+    history.replaceState(null, '', location.pathname);
+    try {
+      const o = parseInvite(h);
+      if (cfg.code !== o.code) {
+        const busy = cfg.mode === 'cloud' && cfg.room;
+        if (!busy || confirm('Buka aplikasi dengan tautan ini? Akses di perangkat ini akan diganti.')) { applyInvite(o); return location.reload(); }
+      }
+    } catch (e) { toast('Tautan undangan tidak valid: ' + e.message, 8000); }
   }
   if (!cfg.me || (cfg.mode === 'local' && !cfg.seen)) return renderOnboarding();
   await start();
@@ -304,6 +344,9 @@ async function start() {
     setStatus('Local (cloud gagal)', 'err');
   }
   if (store.mode === 'local') setStatus('Local', '');
+  const ok = await withTimeout(ensureMember(), 10000, true);
+  if (!ok && RO) return renderRevoked();
+  if (!ok) toast('HP ini belum terdaftar sebagai pemilik. Minta "Tautan untuk Erik/Oni" dari pasangan di Settings → Akses & undangan.', 12000);
 
   store.subscribe('meta', items => {
     const m = items.find(x => x.id === 'settings');
@@ -312,8 +355,21 @@ async function start() {
   });
   store.subscribe('tasks', (items, ch) => { S.tasks = items; remoteToast(ch, 'tugas'); render(); syncReminders(); });
   store.subscribe('guests', (items, ch) => { S.guests = items; remoteToast(ch, 'tamu'); render(); });
-  store.subscribe('budget', (items, ch) => { S.budget = items; remoteToast(ch, 'budget'); render(); });
   store.subscribe('photos', items => { S.photos = Object.fromEntries(items.map(p => [p.id, p.data])); render(); });
+  if (OWNER) {
+    store.subscribe('budget', (items, ch) => { S.budget = items; remoteToast(ch, 'budget'); render(); });
+    if (store.mode === 'cloud') {
+      store.subscribe('invites', items => { S.invites = items; render(); });
+      store.subscribe('members', items => { S.members = items; render(); });
+    }
+  }
+  const caresC = cid => OWNER ? !cfg.mutePanitia : myCommittees().includes(cid);
+  store.subscribe('people', items => { S.people = items; render(); syncReminders(); });
+  store.subscribe('ptasks', (items, ch) => { S.ptasks = items; remoteToast((ch || []).filter(c => caresC(c.data.cid)), 'tugas panitia'); render(); syncReminders(); });
+  store.subscribe('pnotes', (items, ch) => { S.pnotes = items;
+    (booted ? ch || [] : []).filter(c => c.type === 'added' && c.data.by !== cfg.me && caresC(c.data.cid)).slice(0, 2)
+      .forEach(c => toast(`📣 ${committeeName(c.data.cid)} · ${c.data.by}: ${c.data.text}`, 7000));
+    render(); });
 
   if (cfg.migrate && store.mode === 'cloud') migrateLocal();
   booted = true;
@@ -326,8 +382,36 @@ async function start() {
   setTimeout(() => { checkReminders(); showSinceLastSeen(); purgeTrash(); }, 1200);
 }
 
+const withTimeout = (p, ms, fallback) => Promise.race([p, new Promise(r => setTimeout(() => r(fallback), ms))]);
+/* Catat HP ini di members/{uid}. Pemilik lama (sebelum ada peran) mendaftarkan dirinya otomatis —
+   itu hanya berhasil selama aturan lama masih berlaku, jadi buka aplikasi baru dulu sebelum aturan baru dipasang. */
+async function ensureMember() {
+  if (store.mode !== 'cloud' || !store.uid) return true;
+  const u = store.uid;
+  let m = null;
+  try { m = await store.getOne('members', u); } catch (e) { console.warn('baca member gagal', e.code || e.message); }
+  if (m && m.code && (!cfg.code || m.code === cfg.code)) { if (!cfg.code) { cfg.code = m.code; saveCfg(cfg); } return true; }
+  try {
+    if (OWNER && !cfg.code) {
+      const code = 'o-' + rand(20);
+      await store.put('invites', { id: code, role: 'owner', name: cfg.me, person: '', ts: Date.now() });
+      cfg.code = code; cfg.role = 'owner'; saveCfg(cfg);
+    }
+    if (!cfg.code) return false;
+    await store.put('members', { id: u, role: ROLE, code: cfg.code, person: cfg.person || '', name: cfg.me, ts: Date.now() });
+    return true;
+  } catch (e) { console.warn('klaim gagal', e.code || e.message); return false; }
+}
+function renderRevoked() {
+  document.querySelector('.tabs').style.display = 'none';
+  view.innerHTML = `<div class="hero"><div class="ring">🔒</div><h1>Akses tidak berlaku</h1>
+    <p class="muted">Tautan ini sudah dicabut atau tidak dikenali. Minta tautan baru ke Erik atau Oni.</p></div>
+    <div class="card"><button class="ghost block" data-action="leave">Keluar &amp; buka tautan lain</button></div>`;
+}
+
 function onStatus(s) {
-  if (s.error) setStatus('Error: ' + s.error, 'err');
+  if (s.error && /permission/.test(s.error) && RO) setStatus('Akses ditolak', 'err');
+  else if (s.error) setStatus('Error: ' + s.error, 'err');
   else if (s.online) setStatus('● Synced', 'ok');
   else setStatus('Offline (saved locally)', '');
 }
@@ -368,6 +452,17 @@ function showSinceLastSeen() {
    ============================================================ */
 function pendingReminders() {
   const out = [], auto = S.meta.autoRemind !== false;
+  if (ROLE === 'viewer') return out;
+  // Tugas panitia: panitia → tugas panitianya (yang ditujukan ke dia atau belum ada penanggung jawab); Erik/Oni → yang ditujukan ke mereka.
+  for (const t of live.ptasks()) {
+    if (t.done) continue;
+    const mine = ROLE === 'panitia' ? myCommittees().includes(t.cid) && (!t.assignee || t.assignee === 'p:' + cfg.person) : t.assignee === cfg.me;
+    if (!mine) continue;
+    let at = Number(t.remindAt) || 0;
+    if (!at && auto && t.due) { const d = addDays(parseISO(t.due), -1); d.setHours(9, 0, 0, 0); at = d.getTime(); }
+    if (at) out.push({ key: 'pt' + t.id + '|' + at, at, title: t.title, body: 'Tugas ' + committeeName(t.cid), who: '' });
+  }
+  if (!OWNER) return out.sort((a, b) => a.at - b.at);
   for (const t of live.tasks()) {
     if (t.done) continue;
     let at = Number(t.remindAt) || 0;
@@ -429,12 +524,19 @@ let mctx = null;
 function openModal(html, c) {
   mctx = c || null;
   mbody.innerHTML = html;
+  if (RO && !(c && c.edit)) lockModal();
   modalEl.classList.add('open');
   document.body.classList.add('noscroll');
   mbody.scrollTop = 0;
   pushOverlay(() => hardCloseModal());
 }
-const setModalHtml = h => { const s = mbody.scrollTop; mbody.innerHTML = h; mbody.scrollTop = s; };
+const setModalHtml = h => { const s = mbody.scrollTop; mbody.innerHTML = h; if (RO && !(mctx && mctx.edit)) lockModal(); mbody.scrollTop = s; };
+/* Mode lihat saja: isian dikunci, tombol simpan/hapus disembunyikan. Server juga menolak perubahan. */
+function lockModal() {
+  mbody.querySelectorAll('input,select,textarea').forEach(el => { el.disabled = true; });
+  mbody.querySelectorAll('[data-m]').forEach(el => { if (!['close', 'cancel', 'view-photo'].includes(el.dataset.m)) el.style.display = 'none'; });
+  mbody.querySelectorAll('.addph').forEach(el => { el.style.display = 'none'; });
+}
 function hardCloseModal() {
   if (mctx && mctx.onClose) { const f = mctx.onClose; mctx = null; f(); }
   modalEl.classList.remove('open');
@@ -442,6 +544,11 @@ function hardCloseModal() {
   mbody.innerHTML = ''; mctx = null;
 }
 const closeModal = () => popOverlay();
+/* Tutup jendela ini dulu, baru buka jendela berikutnya (menutup memakai tombol Back, jadi selesainya belakangan). */
+function closeThen(fn) {
+  const h = () => { removeEventListener('popstate', h); setTimeout(fn, 0); };
+  addEventListener('popstate', h); closeModal();
+}
 
 mbody.addEventListener('click', e => { const b = e.target.closest('[data-m]'); if (b && mctx?.click) mctx.click(e, b); });
 mbody.addEventListener('input', e => { if (mctx?.input) mctx.input(e); });
@@ -508,7 +615,7 @@ async function softDelete(col, id, label) {
   toast(`"${label}" dihapus.`, 8000, { label: 'Undo', fn: () => patch(col, id, { deletedAt: 0 }) });
 }
 async function purgeTrash() {
-  if (!store) return;
+  if (!store || !OWNER) return;
   const cut = Date.now() - 30 * DAY;
   for (const col of ['tasks', 'guests', 'budget']) {
     for (const o of S[col]) if (o.deletedAt && o.deletedAt < cut) await store.del(col, o.id);
@@ -524,7 +631,9 @@ function render() {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
   const keep = {};
   view.querySelectorAll('[data-keep]').forEach(el => { keep[el.id] = { v: el.value, f: document.activeElement === el, s: el.selectionStart, e: el.selectionEnd }; });
-  view.innerHTML = ({ home: renderHome, tasks: renderTasks, guests: renderGuests, budget: renderBudget, settings: renderSettings }[tab])();
+  if (RO && tab === 'budget') tab = 'home';
+  view.innerHTML = ({ home: renderHome, tasks: renderTasks, guests: renderGuests, budget: renderBudget, panitia: renderPanitia,
+    settings: OWNER ? renderSettings : renderSettingsRO }[tab] || renderHome)();
   view.querySelectorAll('[data-keep]').forEach(el => { const k = keep[el.id]; if (k) { el.value = k.v; if (k.f) { el.focus(); try { el.setSelectionRange(k.s, k.e); } catch {} } } });
 }
 $('#tabs').addEventListener('click', e => {
@@ -894,8 +1003,12 @@ function renderGuests() {
   const perGroup = showTotals && groups.length ? totals('Total per grup', groups, inG) : '';
   const perLabel = showTotals && labels.length ? totals('Total per label', labels.map(l => ({ ...l, pre: '#' })), inL) : '';
   return `<div class="chips">${gChips}</div>${lChips}${stat}
-    <div class="card"><b>Quick add guest</b>
+    <div class="card own"><b>Quick add guest</b>
       <input id="g-name" data-keep placeholder="Guest / family name" autocomplete="off">
+      <div class="sub-h">Jumlah orang</div>
+      <div class="stepper"><button type="button" class="soft" data-action="pax-step" data-v="-1" aria-label="Kurangi">−</button>
+        <input id="g-pax" data-keep type="number" inputmode="numeric" min="1" value="1" aria-label="Jumlah orang">
+        <button type="button" class="soft" data-action="pax-step" data-v="1" aria-label="Tambah">＋</button></div>
       <div class="sub-h">Groups</div>
       <div class="sels">${groups.map(g => selChip('g-grp', g.id, g.name, g.color, lastG.includes(g.id))).join('')}</div>
       <div class="sub-h">Labels</div>
@@ -969,6 +1082,10 @@ const KINDS = {
   categories: { key: 'categories', pre: 'c-', title: 'Manage budget categories', ph: 'New category name…', get: catsC,
     hint: 'Contoh: Pakaian, Makanan, Dokumentasi. Mengubah nama kategori ikut mengubah item budget yang memakainya. Menghapus kategori tidak menghapus itemnya.', one: 'category' }
 };
+KINDS.committees = { key: 'committees', pre: 'k-', title: 'Atur panitia', ph: 'Nama panitia baru…', get: committeesC,
+  hint: 'Contoh: Panitia Souvenir, Panitia Snacks. Menghapus panitia tidak menghapus orang dan tugasnya.', one: 'panitia' };
+KINDS.plabels = { key: 'plabels', pre: 'pl-', title: 'Label anggota panitia', ph: 'Nama label baru…', get: plabelsC,
+  hint: 'Contoh: Ketua, Pengawas, Anggota. Label hanya penanda, tidak mengubah hak akses.', one: 'label' };
 /* Satu jendela Manage untuk grup, label, dan kategori: ganti nama, ganti warna, tambah, hapus. */
 function manageModal(kind) {
   const K = KINDS[kind];
@@ -1188,7 +1305,6 @@ function renderSettings() {
       <button class="soft" data-action="test-notif">Test notification</button></div></div>
     <h2>Sync Erik ↔ Oni</h2><div class="card">
       <div class="small">Current mode: <b>${cloud ? 'Cloud (Firebase) — room: ' + esc(cfg.room) : 'Local (this phone only)'}</b></div>
-      ${cloud ? `<button class="primary block" data-action="share-invite" style="margin-top:10px">📨 Share invite ke pasangan</button>` : ''}
       <label>Room code (sama di HP Erik dan Oni, min. 12 karakter)</label>
       <div class="row"><input id="s-room" value="${esc(cfg.room)}" placeholder="mis. eo-7f3k29xq81ab" autocapitalize="off" autocorrect="off" spellcheck="false">
         <button class="soft" data-action="gen-room">Generate</button></div>
@@ -1198,10 +1314,11 @@ function renderSettings() {
       <input id="s-push" value="${esc(cfg.pushUrl)}" placeholder="https://xxx.workers.dev" autocapitalize="off" spellcheck="false">
       <label>Push secret</label>
       <input id="s-secret" value="${esc(cfg.pushSecret)}" autocapitalize="off" spellcheck="false">
-      <div class="row wrap" style="margin-top:10px"><button class="primary grow" data-action="connect">${cloud ? 'Simpan & sambung ulang' : 'Enable sync'}</button>
-        <button class="soft" data-action="test-conn">Test connection</button>
-        ${cloud ? '<button class="ghost" data-action="disconnect">Turn off</button>' : ''}</div>
+      <button class="primary block" data-action="connect" style="margin-top:12px">${cloud ? 'Simpan &amp; sambung ulang' : 'Enable sync'}</button>
+      <div class="row" style="margin-top:8px"><button class="soft grow" data-action="test-conn">Test connection</button>
+        ${cloud ? '<button class="ghost grow" data-action="disconnect">Turn off</button>' : ''}</div>
       <div class="small muted" style="margin-top:8px">Langkah lengkap ada di SETUP.md.</div></div>
+    ${accessSection()}
     <h2>Tampilan</h2><div class="card"><label style="margin-top:0">Effects</label>
       <select id="s-fx"><option value="full" ${fx === 'full' ? 'selected' : ''}>Full (kaca + blur)</option>
         <option value="light" ${fx === 'light' ? 'selected' : ''}>Light (lebih ringan untuk HP lama)</option></select></div>
@@ -1216,6 +1333,245 @@ function renderSettings() {
       <div class="row wrap" style="margin-top:8px">
       <button class="soft grow" data-action="csv-guests">Export tamu (.csv)</button>
       <button class="soft grow" data-action="csv-budget">Export budget (.csv)</button></div></div>`;
+}
+
+
+/* ---------- Panitia ---------- */
+function renderPanitia() {
+  const cs = committeesC(), mine = myCommittees(), pl = plabelsC();
+  const order = [...cs].sort((a, b) => mine.includes(b.id) - mine.includes(a.id));
+  const mineNames = mine.map(committeeName);
+  const top = OWNER ? `<div class="card"><b>Kelola panitia</b>
+      <div class="muted small">Buat panitia, tambahkan orang, lalu kirim tautan undangan pribadi ke masing-masing orang.</div>
+      <div class="row wrap" style="margin-top:10px"><button class="primary grow" data-action="new-committee">＋ Panitia baru</button>
+        <button class="soft grow" data-action="new-person">＋ Tambah orang</button></div>
+      <div class="row wrap" style="margin-top:8px"><button class="soft grow" data-action="manage-committees">Atur panitia</button>
+        <button class="soft grow" data-action="manage-plabels">Label anggota</button></div></div>`
+    : ROLE === 'panitia' ? `<div class="card small">Halo <b>${esc(cfg.me)}</b>! Kamu bisa mengubah tugas dan pengumuman di
+        <b>${esc(mineNames.join(', ') || '(belum ada panitia)')}</b>. Panitia lain hanya bisa dilihat.</div>`
+    : '<div class="card small muted">Mode lihat saja.</div>';
+  if (!cs.length) return top + `<div class="empty">Belum ada panitia.${OWNER ? '<br>Tekan ＋ Panitia baru.' : ''}</div>`;
+  const loose = OWNER ? live.people().filter(p => !Object.keys(p.committees || {}).some(c => cs.some(x => x.id === c))) : [];
+  return top + order.map(c => committeeCard(c, pl, mine.includes(c.id))).join('')
+    + (loose.length ? `<div class="card"><b>Belum masuk panitia</b>${loose.map(p => `<div class="mem" data-action="open-person" data-id="${p.id}">
+        <span class="av">${esc((p.name || '?')[0])}</span><span class="grow">${esc(p.name)}</span></div>`).join('')}</div>` : '');
+}
+function committeeCard(c, pl, isMine) {
+  const can = canEditC(c.id), mem = membersOf(c.id);
+  const tasks = live.ptasks().filter(t => t.cid === c.id)
+    .sort((a, b) => (a.done - b.done) || (a.due || '9999').localeCompare(b.due || '9999') || a.title.localeCompare(b.title));
+  const done = tasks.filter(t => t.done).length, pct = tasks.length ? Math.round(done / tasks.length * 100) : 0;
+  const notes = S.pnotes.filter(n => n.cid === c.id && !n.deletedAt).sort((a, b) => b.ts - a.ts);
+  return `<div class="card pan" style="${colorVars(c.color)}">
+    <div class="pan-h"><i class="dot big"></i><b class="grow">${esc(c.name)}</b>${isMine ? '<span class="pill sage">Panitia saya</span>' : ''}
+      ${OWNER ? `<button class="ico" data-action="manage-committees" aria-label="Ubah panitia">✎</button>` : ''}</div>
+    <div class="row small muted" style="margin-top:6px"><span class="grow">Tugas selesai ${done}/${tasks.length}</span><span>${pct}%</span></div>
+    <div class="bar pbar"><i style="width:${pct}%"></i></div>
+    <div class="sub-h">Anggota (${mem.length})</div>
+    ${mem.length ? mem.map(p => `<div class="mem" ${OWNER ? `data-action="open-person" data-id="${p.id}"` : ''}>
+        <span class="av">${esc((p.name || '?')[0])}</span><span class="grow">${esc(p.name)}</span>
+        ${(p.committees[c.id].labels || []).map(id => { const l = pl.find(x => x.id === id); return l ? tagHtml(l.color, l.name) : ''; }).join('')}</div>`).join('')
+      : '<div class="muted small">Belum ada anggota.</div>'}
+    <div class="sub-h">Tugas</div>
+    ${tasks.length ? tasks.map(t => ptaskRow(t, can)).join('') : '<div class="muted small">Belum ada tugas.</div>'}
+    ${can ? `<button class="soft sm" data-action="new-ptask" data-cid="${c.id}" style="margin-top:8px">＋ Tugas</button>` : ''}
+    <div class="sub-h">Pengumuman</div>
+    ${notes.slice(0, 5).map(n => `<div class="note"><div>${esc(n.text)}</div><div class="muted small">${esc(n.by || '')} · ${esc(fmtWhen(n.ts))}${can
+      ? ` · <button class="lnk" data-action="del-pnote" data-id="${n.id}">hapus</button>` : ''}</div></div>`).join('') || '<div class="muted small">Belum ada pengumuman.</div>'}
+    ${can ? `<div class="row" style="margin-top:8px"><input id="pn-${c.id}" data-keep placeholder="Tulis pengumuman…" autocomplete="off">
+      <button class="primary" data-action="add-pnote" data-cid="${c.id}">Kirim</button></div>` : ''}
+  </div>`;
+}
+function ptaskRow(t, can) {
+  const over = !t.done && t.due && parseISO(t.due) < today();
+  return `<div class="item ptask" ${can ? `data-action="open-ptask" data-id="${t.id}" style="cursor:pointer"` : ''}>
+    <button class="chk ${t.done ? 'on' : ''}" ${can ? `data-action="toggle-ptask" data-id="${t.id}"` : 'disabled'} aria-label="Selesai"></button>
+    <div class="grow"><div style="${t.done ? 'text-decoration:line-through;color:var(--muted)' : ''}">${esc(t.title)}</div>
+      <div>${t.assignee ? `<span class="pill">👤 ${esc(assigneeName(t.assignee))}</span>` : ''}${t.due ? `<span class="pill ${over ? 'red' : ''}">${over ? 'Overdue · ' : ''}${esc(fmtShort(t.due))}</span>` : ''}${t.remindAt ? '<span class="pill">🔔</span>' : ''}${t.notes ? '<span class="pill">📝</span>' : ''}</div></div></div>`;
+}
+function ptaskModal(id, cid) {
+  const ex = S.ptasks.find(t => t.id === id);
+  const t = ex ? structuredClone(ex) : { id: uid(), cid, title: '', done: false, assignee: '', due: '', remindAt: 0, notes: '', deletedAt: 0 };
+  const opts = [['', '— Belum ditentukan —'], ...membersOf(t.cid).map(p => ['p:' + p.id, p.name]), ...PEOPLE.map(p => [p, p])];
+  openModal(`<div class="m-head"><h2>${ex ? 'Ubah tugas' : 'Tugas baru'} · ${esc(committeeName(t.cid))}</h2><button class="x" data-m="cancel">✕</button></div>
+    <label>Judul<input id="pt-title" value="${esc(t.title)}" placeholder="mis. Pesan 200 souvenir" autocomplete="off"></label>
+    <div class="row2"><label>Penanggung jawab<select id="pt-who">${opts.map(([v, l]) => `<option value="${esc(v)}" ${t.assignee === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>
+      <label>Tenggat<input type="date" id="pt-due" value="${esc(t.due)}"></label></div>
+    <label>Pengingat<input type="datetime-local" id="pt-rem" value="${msToInput(t.remindAt)}"></label>
+    <label>Catatan<textarea id="pt-notes" rows="3">${esc(t.notes)}</textarea></label>
+    <div class="m-foot">${ex ? '<button class="danger" data-m="del">Hapus</button>' : ''}<button class="ghost" data-m="cancel">Batal</button><button class="primary" data-m="save">Simpan</button></div>`, {
+    edit: true,
+    async click(e, b) {
+      const a = b.dataset.m;
+      if (a === 'cancel') return closeModal();
+      if (a === 'del') {
+        if (!confirm('Hapus tugas ini?')) return;
+        await patch('ptasks', t.id, { deletedAt: Date.now() }, `menghapus tugas: ${t.title}`, t.cid);
+        return closeModal();
+      }
+      if (a !== 'save') return;
+      const title = $('#pt-title', mbody).value.trim();
+      if (!title) return toast('Isi judul tugas.');
+      const f = { cid: t.cid, title, assignee: $('#pt-who', mbody).value, due: $('#pt-due', mbody).value,
+        remindAt: inputToMs($('#pt-rem', mbody).value), notes: $('#pt-notes', mbody).value };
+      if (ex) await patch('ptasks', t.id, f, `mengubah tugas: ${title}`, t.cid);
+      else await put('ptasks', { ...t, ...f }, `menambah tugas: ${title}`, t.cid);
+      cele(e); closeModal();
+    }
+  });
+}
+
+/* Orang (anggota panitia) — hanya Erik & Oni */
+const invitesOf = pid => S.invites.filter(i => i.person === pid);
+const devicesOn = code => S.members.filter(m => m.code === code).length;
+async function makeInvite(role, name, person = '') {
+  const inv = { id: ({ owner: 'o-', panitia: 'p-', viewer: 'v-' }[role]) + rand(20), role, name, person, ts: Date.now() };
+  await store.put('invites', inv);
+  S.invites = [...S.invites.filter(i => i.id !== inv.id), inv];
+  return inv;
+}
+async function revokeInvite(code) {
+  await store.del('invites', code);
+  for (const m of S.members.filter(x => x.code === code)) await store.del('members', m.id).catch(() => {});
+}
+function personModal(id) {
+  const ex = S.people.find(p => p.id === id);
+  const p = ex ? structuredClone(ex) : { id: 'pp-' + uid(), name: '', committees: {}, deletedAt: 0 };
+  p.committees ??= {};
+  const cs = committeesC(), pl = plabelsC();
+  const grab = () => {
+    p.name = $('#pp-name', mbody).value;
+    const next = {};
+    mbody.querySelectorAll('.pp-cm:checked').forEach(x => { next[x.value] = { labels: [] }; });
+    mbody.querySelectorAll('.pp-lb:checked').forEach(x => { const [c, l] = x.value.split('|'); if (next[c]) next[c].labels.push(l); });
+    for (const c of Object.keys(next)) if (!mbody.querySelector(`.pp-lb[value^="${c}|"]`) && p.committees[c]) next[c] = p.committees[c];
+    p.committees = next;
+  };
+  const html = () => {
+    const invs = ex ? invitesOf(p.id) : [], devs = invs.reduce((a, i) => a + devicesOn(i.id), 0);
+    return `<div class="m-head"><h2>${ex ? 'Ubah orang' : 'Tambah orang'}</h2><button class="x" data-m="cancel">✕</button></div>
+    <label>Nama<input id="pp-name" value="${esc(p.name)}" placeholder="mis. Bambang" autocomplete="off"></label>
+    <div class="sub-h">Panitia &amp; label</div>
+    ${cs.length ? cs.map(c => { const on = !!p.committees[c.id]; return `<div class="pp-c">
+      <label class="sel" style="${colorVars(c.color)}"><input type="checkbox" class="pp-cm" value="${c.id}" ${on ? 'checked' : ''}><span><i class="dot"></i>${esc(c.name)}</span></label>
+      ${on ? `<div class="sels" style="margin:6px 0 4px 18px">${pl.map(l => selChip('pp-lb', c.id + '|' + l.id, l.name, l.color, (p.committees[c.id].labels || []).includes(l.id))).join('')}</div>` : ''}</div>`; }).join('')
+      : '<div class="muted small">Buat panitia dulu di tab Panitia.</div>'}
+    ${ex ? `<div class="sub-h">Akses</div><div class="muted small">${invs.length ? `Tautan aktif · ${devs} perangkat terhubung` : 'Belum ada tautan undangan.'}</div>
+      <div class="row wrap" style="margin-top:8px"><button class="soft grow" data-m="link">🔗 Tautan undangan</button>
+      ${invs.length ? '<button class="ghost grow" data-m="revoke">Cabut akses</button>' : ''}</div>`
+      : '<div class="muted small" style="margin-top:10px">Setelah disimpan, tautan undangan untuk orang ini langsung dibuat.</div>'}
+    <div class="m-foot">${ex ? '<button class="danger" data-m="del">Hapus</button>' : ''}<button class="ghost" data-m="cancel">Batal</button><button class="primary" data-m="save">Simpan</button></div>`;
+  };
+  const save = async () => {
+    grab(); p.name = p.name.trim();
+    if (!p.name) { toast('Isi nama dulu.'); return false; }
+    await put('people', p); return true;
+  };
+  openModal(html(), {
+    edit: true,
+    input(e) { if (e.target.classList.contains('pp-cm')) { grab(); setModalHtml(html()); } },
+    async click(e, b) {
+      const a = b.dataset.m;
+      if (a === 'cancel') return closeModal();
+      if (a === 'save') {
+        if (!(await save())) return;
+        cele(e);
+        if (ex) return closeModal();
+        const inv = await makeInvite('panitia', p.name, p.id);
+        return closeThen(() => linkModal(inv, p.name));
+      }
+      if (a === 'link') {
+        if (!(await save())) return;
+        const inv = invitesOf(p.id)[0] || await makeInvite('panitia', p.name, p.id);
+        return closeThen(() => linkModal(inv, p.name));
+      }
+      if (a === 'revoke') {
+        if (!confirm(`Cabut akses ${p.name}? HP yang memakai tautannya langsung tidak bisa membuka data. Tautan baru bisa dibuat lagi.`)) return;
+        for (const i of invitesOf(p.id)) await revokeInvite(i.id);
+        toast('Akses dicabut.'); return setModalHtml(html());
+      }
+      if (a === 'del') {
+        if (!confirm(`Hapus ${p.name}? Aksesnya juga dicabut.`)) return;
+        for (const i of invitesOf(p.id)) await revokeInvite(i.id);
+        await put('people', { ...p, deletedAt: Date.now() });
+        return closeModal();
+      }
+    }
+  });
+}
+
+/* Tautan undangan pribadi: kode di dalamnya = kunci. */
+const b64e = s => btoa(unescape(encodeURIComponent(s))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const b64d = s => { s = s.replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; return decodeURIComponent(escape(atob(s))); };
+function appBase() { return location.origin + location.pathname.replace(/index\.html$/, ''); }
+function apkUrl() {
+  const owner = location.hostname.split('.')[0], repo = location.pathname.split('/').filter(Boolean)[0] || 'wedding';
+  return `https://github.com/${owner}/${repo}/releases/download/latest/wedding-erik-oni.apk`;
+}
+function inviteLink(inv) {
+  const o = { v: 2, room: cfg.room, fb: cfg.firebaseConfig, push: inv.role === 'viewer' ? '' : cfg.pushUrl, role: inv.role, code: inv.id, name: inv.name, person: inv.person || '' };
+  if (inv.role === 'owner') o.sec = cfg.pushSecret;
+  return appBase() + '#join=' + b64e(JSON.stringify(o));
+}
+function linkModal(inv, who) {
+  const url = inviteLink(inv);
+  const as = { owner: 'sebagai pemilik', panitia: 'sebagai panitia', viewer: 'untuk melihat saja (viewer)' }[inv.role];
+  const msg = `Halo${inv.role === 'viewer' ? '' : ' ' + who}, ini tautan aplikasi persiapan pernikahan Erik & Oni ${as}:\n${url}\n\nBuka tautannya di Chrome.`
+    + (inv.role === 'panitia' ? `\n\nSupaya dapat notifikasi, pasang aplikasi Android: ${apkUrl()}\nLalu buka aplikasinya, pilih "Join with invite", dan tempel tautan di atas.` : '')
+    + (inv.role === 'owner' ? '\n\nTautan ini memberi akses penuh. Jangan diteruskan ke orang lain.' : '\n\nMohon jangan teruskan tautan ini ke orang lain.');
+  openModal(`<div class="m-head"><h2>${inv.role === 'viewer' ? 'Link untuk viewer' : 'Tautan untuk ' + esc(who)}</h2><button class="x" data-m="close">✕</button></div>
+    <p class="muted small">Kirim pesan ini lewat WhatsApp. Siapa pun yang memegang tautan ini mendapat akses ${esc(as)}. Kalau bocor, cabut lalu buat tautan baru.</p>
+    <textarea id="lk-msg" rows="9" readonly>${esc(msg)}</textarea>
+    <div class="m-foot"><button class="ghost" data-m="close">Tutup</button><button class="soft" data-m="wa">WhatsApp</button><button class="primary" data-m="copy">Salin</button></div>`, {
+    edit: true,
+    async click(e, b) {
+      const a = b.dataset.m;
+      if (a === 'close') return closeModal();
+      if (a === 'wa') return window.open('https://wa.me/?text=' + encodeURIComponent(msg), '_blank');
+      if (a === 'copy') { try { await navigator.clipboard.writeText(msg); toast('Tersalin.'); cele(e); } catch { $('#lk-msg', mbody).select(); toast('Salin manual dari kotak di atas.'); } }
+    }
+  });
+}
+
+/* Settings untuk panitia dan tamu */
+function renderSettingsRO() {
+  const mine = myCommittees().map(committeeName);
+  const perm = 'Notification' in window ? Notification.permission : 'unsupported';
+  return `<h2>Profil</h2><div class="card"><b>${esc(cfg.me)}</b>
+      <div class="muted small">${ROLE === 'panitia' ? 'Panitia' + (mine.length ? ': ' + esc(mine.join(', ')) : '') + ' — bisa mengubah tugas &amp; pengumuman panitianya sendiri.'
+        : 'Viewer — mode lihat saja.'}</div></div>
+    ${ROLE === 'panitia' ? `<h2>Notifikasi</h2><div class="card">
+      <div class="small muted">Izin notifikasi: <b>${esc(perm)}</b>. Kamu hanya menerima kabar dari panitiamu sendiri.
+        ${native ? '' : 'Notifikasi saat aplikasi tertutup hanya jalan di aplikasi Android.'}</div>
+      <div class="row wrap" style="margin-top:8px"><button class="soft" data-action="ask-notif">Allow notifications</button>
+        <button class="soft" data-action="test-notif">Test notification</button></div>
+      ${native ? '' : `<a class="soft block-link" href="${apkUrl()}">⬇️ Unduh aplikasi Android</a>`}</div>` : ''}
+    <h2>Tampilan</h2><div class="card"><label style="margin-top:0">Effects</label>
+      <select id="s-fx"><option value="full" ${fx === 'full' ? 'selected' : ''}>Full (kaca + blur)</option>
+        <option value="light" ${fx === 'light' ? 'selected' : ''}>Light (lebih ringan untuk HP lama)</option></select></div>
+    <h2>Perangkat ini</h2><div class="card"><button class="ghost block" data-action="leave">Keluar dari undangan</button>
+      <div class="muted small" style="margin-top:6px">Untuk masuk lagi, buka tautan undangan yang sama.</div></div>`;
+}
+/* Bagian Settings pemilik: tautan tamu, tautan pemilik, notifikasi panitia */
+function accessSection() {
+  if (store?.mode !== 'cloud') return '';
+  const viewer = S.invites.find(i => i.role === 'viewer'), owners = S.invites.filter(i => i.role === 'owner');
+  return `<h2>Akses &amp; undangan</h2><div class="card">
+    <b>Link untuk viewer (contoh: keluarga)</b>
+    <div class="muted small">Untuk siapa saja yang boleh melihat. Tidak bisa mengubah apa pun, Budget disembunyikan.
+      ${viewer ? devicesOn(viewer.id) + ' perangkat terhubung.' : 'Belum dibuat.'}</div>
+    <div class="row wrap" style="margin-top:8px"><button class="soft grow" data-action="viewer-link">${viewer ? '🔗 Bagikan link viewer' : 'Buat link viewer'}</button>
+      ${viewer ? '<button class="ghost grow" data-action="viewer-renew">Ganti link</button>' : ''}</div>
+    <div class="sub-h">Pemilik (akses penuh)</div>
+    <div class="muted small">Untuk HP atau laptop baru Erik/Oni.</div>
+    ${owners.map(i => `<div class="item"><div class="grow">${esc(i.name)}<div class="muted small">${devicesOn(i.id)} perangkat · ${esc(fmtWhen(i.ts))}${i.id === cfg.code ? ' · perangkat ini' : ''}</div></div>
+      ${i.id === cfg.code ? '' : `<button class="ghost" data-action="revoke-inv" data-id="${i.id}">Cabut</button>`}</div>`).join('')}
+    <div class="row wrap" style="margin-top:8px"><button class="soft grow" data-action="owner-link" data-v="Erik">Tautan untuk Erik</button>
+      <button class="soft grow" data-action="owner-link" data-v="Oni">Tautan untuk Oni</button></div>
+    <div class="sub-h">Link untuk panitia</div><div class="muted small">Setiap panitia punya link pribadi. Buat di tab Panitia → ＋ Tambah orang, atau ketuk nama orangnya → 🔗 Tautan undangan.</div>
+    <button class="soft block" data-action="go-panitia" style="margin-top:8px">Buka tab Panitia</button>
+    <label class="checks" style="margin-top:8px"><span style="display:flex;align-items:center;gap:8px;color:var(--ink);font-size:15px">
+      <input type="checkbox" id="s-mute" ${cfg.mutePanitia ? '' : 'checked'}>Terima notifikasi dari semua panitia di HP ini</span></label></div>`;
 }
 
 function parseFirebaseConfig(text) {
@@ -1235,11 +1591,25 @@ function inviteText() {
   }))));
 }
 function parseInvite(text) {
+  const v2 = String(text).match(/#join=([A-Za-z0-9_\-+/=]+)/);
+  if (v2) {
+    const o = JSON.parse(b64d(v2[1]));
+    if (!o.room || !o.fb?.apiKey || !o.code || !['owner', 'panitia', 'viewer'].includes(o.role)) throw new Error('Tautan tidak lengkap');
+    return o;
+  }
   const m = String(text).match(/WEDDING-INVITE-V1\s+([A-Za-z0-9+/=]+)/);
   if (!m) throw new Error('Teks undangan tidak dikenali');
   const o = JSON.parse(decodeURIComponent(escape(atob(m[1]))));
   if (!o.room || !o.fb?.apiKey) throw new Error('Undangan tidak lengkap');
   return o;
+}
+function applyInvite(o) {
+  cfg = { ...cfg, mode: 'cloud', room: normRoom(o.room), firebaseConfig: o.fb, pushUrl: o.push || '', pushSecret: o.sec || '', seen: true, migrate: false };
+  if (o.v === 2) {
+    cfg.role = o.role; cfg.code = o.code; cfg.person = o.person || '';
+    cfg.me = o.role === 'viewer' ? 'Viewer' : (o.name || cfg.me);
+  } else { cfg.role = 'owner'; delete cfg.code; delete cfg.person; }
+  saveCfg(cfg);
 }
 function shareInviteModal() {
   const txt = inviteText();
@@ -1257,15 +1627,14 @@ function shareInviteModal() {
 }
 function joinModal() {
   openModal(`<div class="m-head"><h2>Join with invite</h2><button class="x" data-m="cancel">✕</button></div>
-    <p class="muted small">Tempel teks undangan dari pasanganmu. Semua data yang sudah diisi akan langsung muncul.</p>
-    <label>Teks undangan<textarea id="j-txt" rows="5" placeholder="WEDDING-INVITE-V1 ..." autocapitalize="off" spellcheck="false"></textarea></label>
+    <p class="muted small">Tempel tautan undangan (atau teks undangan lama) dari Erik atau Oni.</p>
+    <label>Tautan / teks undangan<textarea id="j-txt" rows="5" placeholder="https://…#join=…" autocapitalize="off" spellcheck="false"></textarea></label>
     <div class="m-foot"><button class="ghost" data-m="cancel">Cancel</button><button class="primary" data-m="go">Join</button></div>`, {
     click(e, b) {
       if (b.dataset.m === 'cancel') return closeModal();
       if (b.dataset.m !== 'go') return;
       let o; try { o = parseInvite($('#j-txt', mbody).value); } catch (err) { return toast(err.message); }
-      cfg = { ...cfg, mode: 'cloud', room: normRoom(o.room), firebaseConfig: o.fb, pushUrl: o.push || '', pushSecret: o.sec || '', seen: true, migrate: false };
-      saveCfg(cfg);
+      applyInvite(o);
       if (!cfg.me) { hardCloseModal(); overlays.pop(); return askWho(() => location.reload()); }
       location.reload();
     }
@@ -1318,10 +1687,20 @@ view.addEventListener('change', async e => {
   if (t.id === 't-sort') { ui.taskSort = t.value; render(); }
   if (t.id === 's-me') { cfg.me = t.value; saveCfg(cfg); toast('Halo, ' + cfg.me + '!'); }
   if (t.id === 's-fx') { localStorage.setItem('wedding.fx', t.value); location.reload(); }
+  if (t.id === 's-mute') {
+    cfg.mutePanitia = !t.checked; saveCfg(cfg);
+    if (cfg.pushToken) store.patch('devices', 'd' + hash32(cfg.pushToken), { mutePanitia: cfg.mutePanitia }).catch(() => {});
+    toast(cfg.mutePanitia ? 'Notifikasi panitia dimatikan di HP ini.' : 'Notifikasi panitia dinyalakan.');
+  }
 });
+const OWNER_ONLY = new Set(['toggle-task', 'new-task', 'import-guide', 'edit-deadline', 'new-label', 'add-guest', 'pax-step', 'rsvp', 'manage-groups',
+  'manage-labels', 'manage-cats', 'new-budget', 'open-budget', 'toggle-paid', 'toggle-pick', 'make-sure', 'restore', 'save-wedding', 'gen-room',
+  'test-conn', 'share-invite', 'connect', 'disconnect', 'import', 'csv-budget', 'export', 'new-committee', 'manage-committees', 'manage-plabels',
+  'new-person', 'open-person', 'viewer-link', 'viewer-renew', 'owner-link', 'revoke-inv']);
 view.addEventListener('click', async e => {
   const b = e.target.closest('[data-action]'); if (!b) return;
   const a = b.dataset.action, id = b.dataset.id;
+  if (RO && OWNER_ONLY.has(a)) return toast('Mode lihat saja — hanya Erik & Oni yang bisa mengubah ini.');
 
   if (a === 'ob-new') return askWho(() => { cfg.seen = true; saveCfg(cfg); location.reload(); });
   if (a === 'ob-join') return joinModal();
@@ -1341,6 +1720,9 @@ view.addEventListener('click', async e => {
   else if (a === 'guest-group') { ui.guestGroup = b.dataset.v; render(); }
   else if (a === 'guest-label') { ui.guestLabel = b.dataset.v; render(); }
   else if (a === 'new-label') tagModal('labels', it => { const L = JSON.parse(sessionStorage.getItem('lastLabels') || '[]'); L.push(it.id); sessionStorage.setItem('lastLabels', JSON.stringify(L)); render(); });
+  else if (a === 'pax-step') {
+    const el = $('#g-pax'); if (el) el.value = Math.max(1, (Math.round(Number(el.value)) || 1) + Number(b.dataset.v));
+  }
   else if (a === 'add-guest') {
     const el = $('#g-name'), name = el.value.trim();
     if (!name) return toast('Isi nama tamu.');
@@ -1349,7 +1731,9 @@ view.addEventListener('click', async e => {
     sessionStorage.setItem('lastGroups', JSON.stringify(groups));
     sessionStorage.setItem('lastLabels', JSON.stringify(labels));
     el.value = '';
-    await put('guests', { id: uid(), name, groups, labels, note: '', phone: '', rsvp: 'invited', pax: 1, deletedAt: 0 }, `menambah tamu: ${name}`);
+    const paxEl = $('#g-pax'), pax = Math.max(1, Math.round(Number(paxEl?.value) || 1));
+    if (paxEl) paxEl.value = 1;
+    await put('guests', { id: uid(), name, groups, labels, note: '', phone: '', rsvp: 'invited', pax, deletedAt: 0 }, `menambah tamu: ${name}${pax > 1 ? ' (' + pax + ' orang)' : ''}`);
     cele(e); $('#g-name')?.focus();
   }
   else if (a === 'rsvp') {
@@ -1375,6 +1759,44 @@ view.addEventListener('click', async e => {
     const i = S.budget.find(x => x.id === id); if (!i) return;
     await patch('budget', id, { status: 'pasti', pick: false }, `konfirmasi budget: ${i.name}`);
     toast(`"${i.name}" dipindah ke Confirmed.`); cele(e);
+  }
+  else if (a === 'new-committee') tagModal('committees', () => render());
+  else if (a === 'manage-committees') manageModal('committees');
+  else if (a === 'manage-plabels') manageModal('plabels');
+  else if (a === 'new-person') personModal();
+  else if (a === 'open-person') personModal(id);
+  else if (a === 'new-ptask') { if (canEditC(b.dataset.cid)) ptaskModal(null, b.dataset.cid); }
+  else if (a === 'open-ptask') { const t = S.ptasks.find(x => x.id === id); if (t && canEditC(t.cid)) ptaskModal(id); }
+  else if (a === 'toggle-ptask') {
+    e.stopPropagation();
+    const t = S.ptasks.find(x => x.id === id); if (!t || !canEditC(t.cid)) return;
+    await patch('ptasks', id, { done: !t.done }, `${t.done ? 'membuka' : 'menyelesaikan'} tugas: ${t.title}`, t.cid);
+    if (!t.done) cele(e);
+  }
+  else if (a === 'add-pnote') {
+    const cid = b.dataset.cid, el = $('#pn-' + cid), text = (el?.value || '').trim();
+    if (!canEditC(cid)) return; if (!text) return toast('Tulis pengumumannya dulu.');
+    el.value = '';
+    await put('pnotes', { id: uid(), cid, text, by: cfg.me, ts: Date.now(), deletedAt: 0 }, `📣 ${text.slice(0, 80)}`, cid);
+    cele(e);
+  }
+  else if (a === 'del-pnote') {
+    const n = S.pnotes.find(x => x.id === id); if (!n || !canEditC(n.cid)) return;
+    if (confirm('Hapus pengumuman ini?')) await patch('pnotes', id, { deletedAt: Date.now() });
+  }
+  else if (a === 'go-panitia') { tab = 'panitia'; sessionStorage.setItem('tab', tab); render(); scrollTo(0, 0); }
+  else if (a === 'viewer-link') { const inv = S.invites.find(i => i.role === 'viewer') || await makeInvite('viewer', 'Viewer'); linkModal(inv, 'Viewer'); }
+  else if (a === 'viewer-renew') {
+    if (!confirm('Ganti link viewer? Semua yang memakai link lama langsung kehilangan akses.')) return;
+    for (const i of S.invites.filter(x => x.role === 'viewer')) await revokeInvite(i.id);
+    linkModal(await makeInvite('viewer', 'Viewer'), 'Viewer');
+  }
+  else if (a === 'owner-link') linkModal(await makeInvite('owner', b.dataset.v), b.dataset.v);
+  else if (a === 'revoke-inv') { if (confirm('Cabut tautan ini? Perangkat yang memakainya langsung kehilangan akses.')) { await revokeInvite(id); toast('Dicabut.'); } }
+  else if (a === 'leave') {
+    if (!confirm('Keluar dari undangan di perangkat ini?')) return;
+    try { localStorage.removeItem(CFG_KEY); } catch {}
+    location.reload();
   }
   else if (a === 'restore') { await patch(b.dataset.col, id, { deletedAt: 0 }); toast('Dikembalikan.'); }
   else if (a === 'save-wedding') {

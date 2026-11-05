@@ -165,6 +165,16 @@ jobs:
           path: out/wedding-erik-oni.apk
           retention-days: 90
 
+      - name: Terbitkan APK di Releases (unduhan publik tanpa login)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create latest out/wedding-erik-oni.apk --target "$GITHUB_SHA" \
+            --title "Aplikasi Android terbaru" \
+            --notes "Pasang file wedding-erik-oni.apk. Data hanya bisa dibuka dengan tautan undangan dari Erik atau Oni."
+          echo "APK publik: https://github.com/${GITHUB_REPOSITORY}/releases/download/latest/wedding-erik-oni.apk"
+
       - name: Ringkasan
         run: |
           {
