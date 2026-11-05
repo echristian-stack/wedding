@@ -67,15 +67,27 @@ jobs:
 
       - name: Pasang icon aplikasi (foto Erik & Oni)
         run: |
-          R=android/app/src/main/res
-          rm -f $R/mipmap-anydpi-v26/ic_launcher.xml $R/mipmap-anydpi-v26/ic_launcher_round.xml
-          for pair in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
-            D=$R/mipmap-${pair%%:*}; S=${pair##*:}
-            mkdir -p $D
-            convert icons/icon-512.png -resize ${S}x${S} $D/ic_launcher.png
-            convert icons/icon-512.png -resize ${S}x${S} -alpha set \( +clone -channel A -evaluate set 0 +channel -fill white -draw "circle $((S/2)),$((S/2)) $((S/2)),0" \) -compose DstIn -composite $D/ic_launcher_round.png
-            cp $D/ic_launcher.png $D/ic_launcher_foreground.png
-          done
+          pip install --quiet pillow
+          python3 - <<'PY'
+          import os
+          from PIL import Image, ImageDraw
+          R = 'android/app/src/main/res'
+          for f in ('ic_launcher.xml', 'ic_launcher_round.xml'):
+              p = f'{R}/mipmap-anydpi-v26/{f}'
+              if os.path.exists(p): os.remove(p)
+          src = Image.open('icons/icon-512.png').convert('RGBA')
+          for d, s in (('mdpi', 48), ('hdpi', 72), ('xhdpi', 96), ('xxhdpi', 144), ('xxxhdpi', 192)):
+              out = f'{R}/mipmap-{d}'
+              os.makedirs(out, exist_ok=True)
+              im = src.resize((s, s), Image.LANCZOS)
+              im.save(f'{out}/ic_launcher.png')
+              im.save(f'{out}/ic_launcher_foreground.png')
+              big = Image.new('L', (s * 4, s * 4), 0)
+              ImageDraw.Draw(big).ellipse((0, 0, s * 4 - 1, s * 4 - 1), fill=255)
+              mask = big.resize((s, s), Image.LANCZOS)
+              r = im.copy(); r.putalpha(mask); r.save(f'{out}/ic_launcher_round.png')
+          print('icon terpasang')
+          PY
 
       - name: Pasang google-services.json (untuk push)
         run: |
